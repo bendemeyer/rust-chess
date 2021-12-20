@@ -1,27 +1,25 @@
 use fnv::FnvHashSet;
 
-use crate::util::FnvIndexSet;
+use crate::util::{ControlFlow, FnvIndexSet, FoldHelper, UnwrapsAll};
 
 use crate::rules::board::squares::BoardSquare;
 
 use super::PieceType;
 
 
-fn get_squares_for_vector(square: u8, vector: &MovementVector, depth: u8, base: Option<Vec<u8>>) -> Vec<u8> {
-    if depth > vector.max_dist {
-        return base.unwrap_or(Vec::new());
-    }
-    return match BoardSquare::from_value(square).apply_movement(vector.col_shift, vector.row_shift) {
-        Err(_e) => base.unwrap_or(Vec::new()),
-        Ok(bsquare) => match base {
-            None => get_squares_for_vector(bsquare.value(), vector, depth + 1, Some(Vec::new())),
-            Some(b) => get_squares_for_vector(bsquare.value(), vector, depth + 1, Some([b, vec![square]].concat()))
+fn get_squares_for_vector(square: u8, vector: &MovementVector) -> Vec<u8> {
+    return (0u8..vector.max_dist).try_fold(FoldHelper::init(Vec::new(), square), |fh, _| {
+        match BoardSquare::from_value(fh.data).apply_movement(vector.col_shift, vector.row_shift) {
+            Err(_) => ControlFlow::Break(fh),
+            Ok(new_square) => {
+                ControlFlow::Continue(FoldHelper::init([fh.accumulator, Vec::from([new_square.value()])].concat(), new_square.value()))
+            }
         }
-    }
+    }).unwrap_all().get_result();
 }
 
 fn build_static_vector(square: u8, vector: &MovementVector) -> FnvIndexSet<u8> {
-    return FnvIndexSet::from_iter(get_squares_for_vector(square, vector, 0, None).into_iter());
+    return FnvIndexSet::from_iter(get_squares_for_vector(square, vector).into_iter());
 }
 
 fn collect_static_vectors(square: u8, vectors: &Vec<&MovementVector>) -> Vec<FnvIndexSet<u8>> {
@@ -51,6 +49,13 @@ impl CastleType {
         return match self {
             &Self::Kingside => String::from("O-O"),
             &Self::Queenside => String::from("O-O-O"),
+        }
+    }
+
+    pub fn value(&self) -> &str {
+        return match self {
+            &Self::Kingside => "kingside",
+            &Self::Queenside => "queenside",
         }
     }
 }
@@ -149,6 +154,7 @@ pub trait HasMove {
     fn get_piece_movements(&self) -> Vec<PieceMovement>;
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Move {
     NewGame(NewGame),
     BasicMove(BasicMove),
@@ -171,8 +177,10 @@ impl HasMove for Move {
     } 
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct NewGame {}
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct BasicMove {
     pub start: u8,
     pub end: u8,
@@ -184,6 +192,7 @@ impl HasMove for BasicMove {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Castle {
     pub side: CastleType,
     pub king_start: u8,
@@ -201,16 +210,19 @@ impl HasMove for Castle {
     }
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Promotion {
     pub promote_to: PieceType,
     pub basic_move: BasicMove,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TwoSquarePawnMove {
     pub en_passant_target: u8,
     pub basic_move: BasicMove,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct EnPassant {
     pub capture_square: u8,
     pub basic_move: BasicMove,

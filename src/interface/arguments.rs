@@ -3,12 +3,9 @@ use std::collections::{HashSet, HashMap, VecDeque};
 use crate::util::errors::InputError;
 
 
-enum ArgumentTypes {
-    Positional,
-    PositionalN,
-    Named,
-    NamedN,
-    Flag,
+pub enum ParsedArgs {
+    SubCommand(SubCommand),
+    Arguments(Arguments),
 }
 
 
@@ -22,13 +19,19 @@ struct Argument {
 }
 
 
-pub struct ParsedArgs {
-    args: HashMap<String, String>,
-    nargs: HashMap<String, Vec<String>>,
-    flags: HashSet<String>,
+pub struct SubCommand {
+    pub name: String,
+    pub args: Box<ParsedArgs>,
 }
 
-impl ParsedArgs {
+#[derive(Default)]
+pub struct Arguments {
+    pub args: HashMap<String, String>,
+    pub nargs: HashMap<String, Vec<String>>,
+    pub flags: HashSet<String>,
+}
+
+impl Arguments {
     pub fn get_arg(&self, name: &str) -> Option<String> {
         return match self.args.get(name) {
             Some(arg) => Some(String::from(arg)),
@@ -51,6 +54,7 @@ impl ParsedArgs {
 
 #[derive(Default)]
 pub struct ArgumentParserBuilder {
+    sub_commands: HashMap<String, ArgumentParserBuilder>,
     required: HashSet<String>,
     positional: Vec<Argument>,
     named: HashMap<String, Argument>,
@@ -64,6 +68,13 @@ pub struct ArgumentParserBuilder {
 impl ArgumentParserBuilder {
     fn new() -> ArgumentParserBuilder {
         return Default::default();
+    }
+
+    pub fn add_subcommand(&mut self, name: &str) -> Result<&mut ArgumentParserBuilder, ()> {
+        let sub_builder: ArgumentParserBuilder = Default::default();
+        self.sub_commands.insert(String::from(name), sub_builder);
+        return Ok(self.sub_commands.get_mut(name).unwrap());
+
     }
 
     pub fn add_positional_arg(&mut self, name: &str, required: bool, narg: bool) -> Result<(), InputError> {
@@ -135,6 +146,9 @@ impl ArgumentParserBuilder {
 
     pub fn build(&self) -> ArgumentParser {
         return ArgumentParser {
+            sub_commands: self.sub_commands.iter().map(|(n, b)| {
+                (String::from(n), b.build())
+            }).collect(),
             required: self.required.clone(),
             positional: self.positional.clone(),
             named: self.named.clone(),
@@ -145,6 +159,7 @@ impl ArgumentParserBuilder {
 
 
 pub struct ArgumentParser {
+    sub_commands: HashMap<String, ArgumentParser>,
     required: HashSet<String>,
     positional: Vec<Argument>,
     named: HashMap<String, Argument>,
@@ -157,6 +172,24 @@ impl ArgumentParser {
     }
 
     pub fn parse(&self, input: &str) -> Result<ParsedArgs, InputError> {
+        let mut args: VecDeque<String> = input.split(" ").map(|x| { String::from(x) }).collect();
+        match args.pop_front() {
+            Some(s) => {
+                if self.sub_commands.contains_key(&s) {
+                    let remaining_input = &args.iter().fold(String::new(), |mut a, b| { a.push_str(b); a });
+                    return Ok(ParsedArgs::SubCommand(SubCommand {
+                        name: String::from(&s),
+                        args: match self.sub_commands.get(&s).unwrap().parse(remaining_input) {
+                            Ok(args) => Box::new(args),
+                            Err(e) => return Err(e),
+                        }
+                    }));
+                } else {
+                    args.push_front(s);
+                }
+            },
+            None => return Ok(ParsedArgs::Arguments(Default::default()))
+        };
         let mut positional_queue = VecDeque::from_iter(self.positional.iter());
         let mut required_fields: HashSet<&String> = HashSet::from_iter(self.required.iter());
         let mut return_args: HashMap<String, String> = HashMap::new();
@@ -255,10 +288,10 @@ impl ArgumentParser {
         if !required_fields.is_empty() {
             return Err(InputError::new("Some required arguments were not provided."))
         }
-        return Ok(ParsedArgs{
+        return Ok(ParsedArgs::Arguments(Arguments {
             args: HashMap::from_iter(return_args.iter().map(|(k,v)| (String::from(k), String::from(v)))),
             nargs: HashMap::from_iter(return_nargs.iter().map(|(k,v)| (String::from(k), Vec::from_iter(v.iter().map(|x| String::from(x)))))),
             flags: HashSet::from_iter(return_flags.iter().map(|x| String::from(x))),
-        });
+        }));
     }
 }

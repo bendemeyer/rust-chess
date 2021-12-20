@@ -9,11 +9,11 @@ use self::squares::{BoardSquare, square_in_row, BoardRow, get_col_and_row_from_s
 
 use super::Color;
 use super::pieces::{Piece, PieceType, PIECE_MOVE_VECTOR_MAP, UNMOVED_WHITE_PAWN_ADVANCING_VECTORS, MOVED_WHITE_PAWN_ADVANCING_VECTORS, UNMOVED_BLACK_PAWN_ADVANCING_VECTORS, MOVED_BLACK_PAWN_ADVANCING_VECTORS, WHITE_PAWN_ATTACKING_VECTORS, BLACK_PAWN_ATTACKING_VECTORS};
-use super::pieces::movement::{MovementDetail, PawnMovementDetail, PieceMovementDetail, build_movement_detail, MovementVector, build_pawn_movement_detail, CastleType, Move, HasMove, Movement, BasicMove, Promotion, EnPassant, TwoSquarePawnMove, Castle};
+use super::pieces::movement::{BasicMove, Castle, CastleType, EnPassant, HasMove, Move, Movement, MovementDetail, MovementVector, PawnMovementDetail, PieceMovement, PieceMovementDetail, Promotion, TwoSquarePawnMove, build_movement_detail, build_pawn_movement_detail};
 
 
 lazy_static! {
-    static ref BOARD_PIECE_MOVES: FnvHashMap<u8, FnvHashMap<PieceType, PieceMovementDetail>> = FnvHashMap::from_iter((0u8..63u8).into_iter().map(|square| {
+    pub static ref BOARD_PIECE_MOVES: FnvHashMap<u8, FnvHashMap<PieceType, PieceMovementDetail>> = FnvHashMap::from_iter((0u8..63u8).into_iter().map(|square| {
         (square, FnvHashMap::from_iter(PIECE_MOVE_VECTOR_MAP.iter().map(|(ptype, vectors)| {
             (*ptype, build_movement_detail(square, vectors))
         })))
@@ -311,10 +311,10 @@ pub struct BoardState {
 
 #[derive(Clone, Default)]
 pub struct BoardLocations {
-    all_white_piece_locations: FnvIndexSet<u8>,
-    white_king_location: u8,
-    all_black_piece_locations: FnvIndexSet<u8>,
-    black_king_location: u8,
+    pub all_white_piece_locations: FnvIndexSet<u8>,
+    pub white_king_location: u8,
+    pub all_black_piece_locations: FnvIndexSet<u8>,
+    pub black_king_location: u8,
 }
 
 impl BoardLocations {
@@ -357,11 +357,10 @@ impl Board {
         let king_square = self.find_king(self.state.to_move);
         let mut moves: Vec<Move> = Vec::new();
         let (checks, pins) = parse_checks_and_pins(self.get_checks_and_pins(&king_square, self.state.to_move));
+        let pinned_squares: FnvHashSet<u8> = pins.iter().map(|p| p.pinned_square).collect();
         if checks.len() > 1 { return self.get_legal_king_moves() }
-        if !checks.is_empty() { return self.get_legal_moves_from_check(checks.first().unwrap()) }
-        let mut pinned_squares: FnvHashSet<u8> = Default::default();
+        if !checks.is_empty() { return self.get_legal_moves_from_check(checks.first().unwrap(), &pinned_squares) }
         for pin in pins {
-            pinned_squares.insert(pin.pinned_square);
             moves.append(&mut (self.get_legal_moves_for_pinned_piece(&pin)))
         }
         for square in self.get_pieces_to_move() {
@@ -376,11 +375,12 @@ impl Board {
         return moves;
     }
 
-    pub fn new_board_from_move(&self, new_move: Move) -> Board {
+    pub fn new_board_from_move(&self, new_move: &Move) -> Board {
         let piece_moves = new_move.get_piece_movements();
         let mut new_board = self.clone();
         new_board.state.halfmove_clock += 1;
         for movement in piece_moves {
+            new_board.update_castle_availability(&movement);
             let piece = new_board.piece_map.get(&movement.start_square).unwrap().clone();
             match new_board.piece_map.remove(&movement.end_square) { Some(_) => new_board.state.halfmove_clock = 0, None => () }
             new_board.piece_map.insert(movement.end_square, piece);
@@ -392,15 +392,6 @@ impl Board {
                     match piece.piece_type {
                         PieceType::King => {
                             new_board.piece_locations.white_king_location = movement.end_square;
-                            new_board.state.castle_availability.white_kingside = false;
-                            new_board.state.castle_availability.white_queenside = false;
-                        },
-                        PieceType::Rook => {
-                            match get_castle_for_rook_position(movement.start_square) {
-                                Some((_, ctype)) if ctype == CastleType::Kingside => new_board.state.castle_availability.white_kingside = false,
-                                Some((_, ctype)) if ctype == CastleType::Queenside => new_board.state.castle_availability.white_kingside = false,
-                                _ => ()
-                            }
                         },
                         PieceType::Pawn => { new_board.state.halfmove_clock = 0; },
                         _ => ()
@@ -412,15 +403,6 @@ impl Board {
                     match piece.piece_type {
                         PieceType::King => {
                             new_board.piece_locations.black_king_location = movement.end_square;
-                            new_board.state.castle_availability.black_kingside = false;
-                            new_board.state.castle_availability.black_queenside = false;
-                        },
-                        PieceType::Rook => {
-                            match get_castle_for_rook_position(movement.start_square) {
-                                Some((_, ctype)) if ctype == CastleType::Kingside => new_board.state.castle_availability.black_kingside = false,
-                                Some((_, ctype)) if ctype == CastleType::Queenside => new_board.state.castle_availability.black_kingside = false,
-                                _ => ()
-                            }
                         },
                         PieceType::Pawn => { new_board.state.halfmove_clock = 0; },
                         _ => ()
@@ -442,6 +424,24 @@ impl Board {
         return new_board;
     }
 
+    fn update_castle_availability(&mut self, movement: &PieceMovement) {
+        match (movement.start_square, movement.end_square) {
+            (4 /*e1*/, _) => {
+                self.state.castle_availability.white_kingside = false;
+                self.state.castle_availability.white_queenside = false;
+            },
+            (7 /*g1*/, _) | (_, 7 /*g1*/) => self.state.castle_availability.white_kingside = false,
+            (0 /*a1*/, _) | (_, 0 /*a1*/) => self.state.castle_availability.white_queenside = false,
+            (60/*e8*/, _) => {
+                self.state.castle_availability.black_kingside = false;
+                self.state.castle_availability.black_queenside = false;
+            },
+            (63/*g8*/, _) | (_, 63/*g8*/) => self.state.castle_availability.black_kingside = false,
+            (56/*a8*/, _) | (_, 56/*a8*/) => self.state.castle_availability.black_queenside = false,
+            _ => ()
+        }
+    }
+
     fn get_moves_for_piece(&self, square: &u8) -> Vec<Move> {
         let piece = self.piece_map.get(square).unwrap();
         let movement = get_moves(square, piece);
@@ -461,10 +461,13 @@ impl Board {
                     },
                     None => {
                         if Some(*move_square) == self.state.en_passant_target && piece.piece_type == PieceType::Pawn && movement.can_capture(move_square) {
-                            moves.push(Move::EnPassant(EnPassant {
-                                basic_move: BasicMove { start: *square, end: *move_square },
-                                capture_square: get_capture_square_for_en_passant(*square, *move_square)
-                            }));
+                            let capture_square = get_capture_square_for_en_passant(*square, *move_square);
+                            if !self.en_passant_is_pin(self.state.to_move, *square, capture_square, self.state.en_passant_target.unwrap()) {
+                                moves.push(Move::EnPassant(EnPassant {
+                                    basic_move: BasicMove { start: *square, end: *move_square },
+                                    capture_square: capture_square
+                                }));
+                            }
                             break
                         } else if movement.can_move(move_square) {
                             if piece.piece_type == PieceType::Pawn && pawn_square_is_promotion(piece.color, *move_square) {
@@ -485,6 +488,30 @@ impl Board {
         })
     }
 
+    fn en_passant_is_pin(&self, king_color: Color, start_square: u8, capture_square: u8, target_square: u8) -> bool {
+        let king_square = self.find_king(king_color);
+        let attacking_movement = get_moves(&king_square, &Piece { color: king_color.swap(), piece_type: PieceType::Queen });
+        if !attacking_movement.attacked_squares().contains(&king_square) { return false };
+        for ray in attacking_movement.movement_rays() {
+            if !ray.contains(&king_square) { continue };
+            for square in ray {
+                if square == &target_square { return false };
+                if square == &start_square || square == &capture_square { continue };
+                match self.piece_map.get(square) {
+                    Some(p) if p.color != king_color => {
+                        match get_moves(square, p).attacked_squares().contains(&king_square) {
+                            true => return true,
+                            false => return false,
+                        }
+                    },
+                    Some(_p) => return false,
+                    None => ()
+                }
+            }
+        }
+        return false;
+    }
+
     fn get_legal_moves_for_pinned_piece(&self, pin: &Pin) -> Vec<Move> {
         let pinned_piece = self.piece_map.get(&pin.pinned_square).unwrap();
         let movement = get_moves(&pin.pinned_square, pinned_piece);
@@ -500,9 +527,10 @@ impl Board {
         });
     }
 
-    fn get_legal_moves_from_check(&self, check: &Check) -> Vec<Move> {
+    fn get_legal_moves_from_check(&self, check: &Check, pinned_squares: &FnvHashSet<u8>) -> Vec<Move> {
         let mut moves = self.get_legal_king_moves();
         for square in self.get_pieces_to_move() {
+            if pinned_squares.contains(square) { continue }
             let piece = self.piece_map.get(square).unwrap();
             if piece.piece_type == PieceType::King { continue }
             let movement = get_moves(square, piece);
@@ -522,8 +550,13 @@ impl Board {
         let king_location = self.find_king(self.state.to_move);
         let king = self.piece_map.get(&king_location).unwrap();
         return get_moves(&king_location, king).attacked_squares().iter().fold(Vec::new(), |mut moves, square| {
-            if !self.is_check(square, self.state.to_move) {
-                moves.push(Move::BasicMove(BasicMove { start: king_location, end: *square }));
+            match self.piece_map.get(square) {
+                Some(p) if p.color == self.state.to_move => (),
+                _ => {
+                    if !self.is_check(square, self.state.to_move) {
+                        moves.push(Move::BasicMove(BasicMove { start: king_location, end: *square }));
+                    }
+                }
             }
             moves
         })

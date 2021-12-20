@@ -19,12 +19,23 @@ pub enum PieceType {
 impl PieceType {
     pub fn get_notation(&self) -> char {
         return match self {
-            &Self::Pawn => ' ',
+            &Self::Pawn   => ' ',
             &Self::Knight => 'N',
             &Self::Bishop => 'B',
-            &Self::Rook => 'R',
-            &Self::King => 'K',
-            &Self::Queen => 'Q',
+            &Self::Rook   => 'R',
+            &Self::King   => 'K',
+            &Self::Queen  => 'Q',
+        }
+    }
+
+    pub fn value(&self) -> &str {
+        return match self {
+            &Self::Pawn   => "pawn",
+            &Self::Knight => "knight",
+            &Self::Bishop => "bishop",
+            &Self::Rook   => "rook",
+            &Self::King   => "king",
+            &Self::Queen  => "queen",
         }
     }
 }

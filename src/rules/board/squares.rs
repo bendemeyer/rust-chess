@@ -62,7 +62,6 @@ pub fn move_from_square(square: u8, col_shift: i8, row_shift: i8) -> Result<u8, 
         return Err(ValueError::new("Invalid column shift provided"));
     }
     let result = start + col_shift + (row_shift * 8);
-    println!("Result: {}", result);
     if result < 0 || result > 63 {
         return Err(ValueError::new("Invalid row shift provided"));
     }
@@ -161,6 +160,10 @@ impl BoardSquare {
 
     pub fn get_notation(&self) -> [char; 2] {
         return get_notation_for_square(self.value()).unwrap()
+    }
+
+    pub fn get_notation_string(&self) -> String {
+        return self.get_notation().iter().collect();
     }
 
     pub fn from_value(val: u8) -> BoardSquare {

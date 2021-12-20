@@ -15,6 +15,13 @@ impl Color {
             Color::Black => Color::White,
         }
     }
+
+    pub fn value(&self) -> &str {
+        return match self {
+            &Color::White => "white",
+            &Color::Black => "black",
+        }
+    }
 }
 
 impl Default for Color {

@@ -19,12 +19,23 @@ impl InteractiveShell {
         }
     }
 
-    pub fn get_command(&self) -> Result<ParsedArgs, InputError> {
+    pub fn empty_line(&self) {
+        println!();
+    }
+
+    pub fn output(&self, output: &str) {
+        println!("{}", output);
+    }
+
+    pub fn input(&self, prompt: &str) -> String {
         let mut line = String::new();
-        print!("{}", self.prompt);
+        print!("{}", prompt);
         std::io::stdout().flush().unwrap();
         std::io::stdin().read_line(&mut line).expect("Error: Could not read a line");
+        return String::from(line.trim());
+    }
 
-        return self.parser.parse(&line.trim().to_string());
+    pub fn get_command(&self) -> Result<ParsedArgs, InputError> {
+        return self.parser.parse(&self.input(&self.prompt));
     }
 }
