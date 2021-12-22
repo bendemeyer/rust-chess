@@ -11,7 +11,7 @@ use super::errors::InputError;
 pub static STARTING_POSITION: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 
-fn get_notation_for_piece(color: Color, ptype: PieceType) -> char {
+pub fn get_notation_for_piece(color: Color, ptype: PieceType) -> char {
     let c = match ptype {
         PieceType::Pawn   => 'P',
         PieceType::Knight => 'N',
@@ -50,6 +50,7 @@ fn get_notation_for_row(row: [Option<(Color, PieceType)>; 8]) -> String {
             }
         }
     }
+    if empty_count > 0 { row_string.push(empty_count.to_string().chars().nth(0).unwrap()) }
     return row_string;
 }
 
@@ -62,7 +63,7 @@ fn get_row_from_notation(fen: &str) -> [Option<(Color, PieceType)>; 8] {
             Ok(tup) => { row[index] = Some(tup); index += 1; },
             Err(_e) => {
                 let empty_count = note.to_string().parse::<u8>().unwrap();
-                for _ in 1..empty_count { row[index] = None; index += 1; }
+                for _ in 1..=empty_count { row[index] = None; index += 1; }
             }
         }
     }
@@ -70,7 +71,7 @@ fn get_row_from_notation(fen: &str) -> [Option<(Color, PieceType)>; 8] {
 }
 
 
-fn get_notation_for_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> String {
+pub fn get_notation_for_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> String {
     return board.into_iter().map(|row| get_notation_for_row(row)).collect::<Vec<String>>().join("/");
 }
 

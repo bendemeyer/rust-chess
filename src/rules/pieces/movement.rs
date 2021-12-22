@@ -4,7 +4,7 @@ use crate::util::{ControlFlow, FnvIndexSet, FoldHelper, UnwrapsAll};
 
 use crate::rules::board::squares::BoardSquare;
 
-use super::PieceType;
+use super::{PieceType, Piece};
 
 
 fn get_squares_for_vector(square: u8, vector: &MovementVector) -> Vec<u8> {
@@ -152,9 +152,11 @@ pub struct PieceMovement {
 
 pub trait HasMove {
     fn get_piece_movements(&self) -> Vec<PieceMovement>;
+
+    fn get_capture(&self) -> Option<Piece>;
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Move {
     NewGame(NewGame),
     BasicMove(BasicMove),
@@ -175,24 +177,40 @@ impl HasMove for Move {
             &Move::EnPassant(m) => m.basic_move.get_piece_movements(),
         }
     } 
+
+    fn get_capture(&self) -> Option<Piece> {
+        match &self {
+            &Move::NewGame(_m) => None,
+            &Move::BasicMove(m) => m.get_capture(),
+            &Move::Castle(m) => m.get_capture(),
+            &Move::Promotion(m) => m.basic_move.get_capture(),
+            &Move::TwoSquarePawnMove(m) => m.basic_move.get_capture(),
+            &Move::EnPassant(m) => m.basic_move.get_capture(),
+        }
+    }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NewGame {}
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BasicMove {
     pub start: u8,
     pub end: u8,
+    pub capture: Option<Piece>,
 }
 
 impl HasMove for BasicMove {
     fn get_piece_movements(&self) -> Vec<PieceMovement> {
         return [ PieceMovement { start_square: self.start, end_square: self.end } ].into_iter().collect();
     }
+
+    fn get_capture(&self) -> Option<Piece> {
+        return self.capture;
+    }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Castle {
     pub side: CastleType,
     pub king_start: u8,
@@ -208,21 +226,25 @@ impl HasMove for Castle {
             PieceMovement { start_square: self.rook_start, end_square: self.rook_end },
         ].into_iter().collect()
     }
+
+    fn get_capture(&self) -> Option<Piece> {
+        return None
+    }
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Promotion {
     pub promote_to: PieceType,
     pub basic_move: BasicMove,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct TwoSquarePawnMove {
     pub en_passant_target: u8,
     pub basic_move: BasicMove,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct EnPassant {
     pub capture_square: u8,
     pub basic_move: BasicMove,

@@ -77,7 +77,7 @@ impl ArgumentParserBuilder {
 
     }
 
-    pub fn add_positional_arg(&mut self, name: &str, required: bool, narg: bool) -> Result<(), InputError> {
+    pub fn add_positional_arg(&mut self, name: &str, required: bool, narg: bool) -> Result<&mut ArgumentParserBuilder, InputError> {
         if self.has_positional_narg {
             return Err(InputError::new("Additional positional arguments cannot be added after a positional narg."))
         }
@@ -102,14 +102,14 @@ impl ArgumentParserBuilder {
         if narg {
             self.has_positional_narg = true;
         }
-        return Ok(());
+        return Ok(self);
     }
 
-    pub fn add_named_arg(&mut self, name: &str, keys: HashSet<&str>, required: bool, narg: bool) -> Result<(), InputError> {
+    pub fn add_named_arg(&mut self, name: &str, keys: HashSet<&str>, required: bool, narg: bool) -> Result<&mut ArgumentParserBuilder, InputError> {
         if keys.is_empty() {
             return Err(InputError::new("Named arguments must supply at least one key."))
         }
-        if self.key_set.is_disjoint(&HashSet::from_iter(keys.iter().map(|x| String::from(*x) ))) {
+        if !self.key_set.is_disjoint(&HashSet::from_iter(keys.iter().map(|x| String::from(*x) ))) {
             return Err(InputError::new("Some of the provided keys already belong to other arguments."))
         }
         self.named.insert(String::from(name), Argument {
@@ -119,18 +119,21 @@ impl ArgumentParserBuilder {
             is_narg: narg,
             is_flag: false,
         });
-        self.key_set.extend(keys.iter().map(|x| { String::from(*x) }));
+        for key in keys {
+            self.keys.insert(String::from(key), String::from(name));
+            self.key_set.insert(String::from(key));
+        }
         if required {
             self.required.insert(String::from(name));
         }
-        return Ok(());
+        return Ok(self);
     }
 
-    pub fn add_flag_arg(&mut self, name: &str, keys: HashSet<&str>) -> Result<(), InputError> {
+    pub fn add_flag_arg(&mut self, name: &str, keys: HashSet<&str>) -> Result<&mut ArgumentParserBuilder, InputError> {
         if keys.is_empty() {
             return Err(InputError::new("Flag arguments must supply at least one key."))
         }
-        if self.key_set.is_disjoint(&HashSet::from_iter(keys.iter().map(|x| String::from(*x) ))) {
+        if !self.key_set.is_disjoint(&HashSet::from_iter(keys.iter().map(|x| String::from(*x) ))) {
             return Err(InputError::new("Some of the provided keys already belong to other arguments."))
         }
         self.named.insert(String::from(name), Argument {
@@ -140,8 +143,11 @@ impl ArgumentParserBuilder {
             is_narg: false,
             is_flag: true,
         });
-        self.key_set.extend(keys.iter().map(|x| { String::from(*x) }));
-        return Ok(());
+        for key in keys {
+            self.keys.insert(String::from(key), String::from(name));
+            self.key_set.insert(String::from(key));
+        }
+        return Ok(self);
     }
 
     pub fn build(&self) -> ArgumentParser {
@@ -172,14 +178,17 @@ impl ArgumentParser {
     }
 
     pub fn parse(&self, input: &str) -> Result<ParsedArgs, InputError> {
-        let mut args: VecDeque<String> = input.split(" ").map(|x| { String::from(x) }).collect();
+        let mut args: VecDeque<String> = match shell_words::split(input) {
+            Err(e) => return Err(InputError::new(&format!("Could not parse input into valid argments: {}", e))),
+            Ok(a) => VecDeque::from_iter(a.into_iter())
+        };
         match args.pop_front() {
             Some(s) => {
                 if self.sub_commands.contains_key(&s) {
-                    let remaining_input = &args.iter().fold(String::new(), |mut a, b| { a.push_str(b); a });
+                    let remaining_input = shell_words::join(args);
                     return Ok(ParsedArgs::SubCommand(SubCommand {
                         name: String::from(&s),
-                        args: match self.sub_commands.get(&s).unwrap().parse(remaining_input) {
+                        args: match self.sub_commands.get(&s).unwrap().parse(&remaining_input) {
                             Ok(args) => Box::new(args),
                             Err(e) => return Err(e),
                         }
@@ -195,7 +204,6 @@ impl ArgumentParser {
         let mut return_args: HashMap<String, String> = HashMap::new();
         let mut return_nargs: HashMap<String, Vec<String>> = HashMap::new();
         let mut return_flags: HashSet<String> = HashSet::new();
-        let mut args= VecDeque::from_iter(input.split(" ").map(|x| { String::from(x) }));
         while !positional_queue.is_empty() {
             let parg = positional_queue.pop_front().unwrap();
             match args.pop_front() {

@@ -126,8 +126,24 @@ lazy_static! {
 }
 
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Piece {
     pub color: Color,
     pub piece_type: PieceType,
+}
+
+impl Piece {
+    pub fn material_score(&self) -> i16 {
+        return (match self.piece_type {
+            PieceType::Pawn   => 100,
+            PieceType::Knight => 300,
+            PieceType::Bishop => 300,
+            PieceType::Rook   => 500,
+            PieceType::Queen  => 900,
+            PieceType::King   => 0,
+        }) * (match self.color {
+            Color::White => 1,
+            Color::Black => -1,
+        })
+    }
 }

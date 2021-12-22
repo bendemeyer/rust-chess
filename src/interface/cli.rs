@@ -1,20 +1,26 @@
 use std::collections::HashSet;
 
-use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::squares::BoardSquare, pieces::{PieceType, movement::Move}}};
+use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::BoardSquare}, pieces::{PieceType, movement::Move}}, util::fen::{get_notation_for_piece, FenBoardState}};
 
 use super::arguments::{ArgumentParser, Arguments};
 
 
 fn build_argument_parser() -> ArgumentParser {
     let mut builder = ArgumentParser::builder();
-    let new_command = builder.add_subcommand("new").unwrap();
-    new_command.add_positional_arg("depth", true, false).unwrap();
-    let list_command = builder.add_subcommand("list").unwrap();
-    list_command.add_positional_arg("type", true, false).unwrap();
-    let suggest_command = builder.add_subcommand("suggest").unwrap();
-    suggest_command.add_positional_arg("count", false, false).unwrap();
-    let _move_command = builder.add_subcommand("move").unwrap();
-    let _size_command = builder.add_subcommand("size").unwrap();
+    builder.add_subcommand("new").unwrap()
+        .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap()
+        .add_named_arg("from_fen", HashSet::from(["--from-fen"]), false, false).unwrap();
+    builder.add_subcommand("list").unwrap()
+        .add_positional_arg("type", true, false).unwrap();
+    builder.add_subcommand("suggest").unwrap()
+        .add_positional_arg("count", false, false).unwrap();
+    builder.add_subcommand("size").unwrap()
+        .add_flag_arg("by_level", HashSet::from(["--by-level"])).unwrap();
+    builder.add_subcommand("move").unwrap();
+    builder.add_subcommand("serialize").unwrap()
+        .add_positional_arg("type", true, false).unwrap();
+    builder.add_subcommand("board").unwrap()
+        .add_flag_arg("as_fen", HashSet::from(["--as-fen"])).unwrap();
     return builder.build();
 }
 
@@ -22,9 +28,6 @@ fn build_argument_parser() -> ArgumentParser {
 fn format_move_elements(color: &str, piece: &str, start: &str, movement: &str, end: &str, additional: &str) -> String {
     return format!("{} {} on {} {} {}{}", color, piece, start, movement, end, additional);
 }
-
-
-
 
 
 pub struct Interface {
@@ -54,11 +57,13 @@ impl Interface {
                 },
                 Ok(args) => match args {
                     ParsedArgs::SubCommand(s) => match s.name.as_str() {
-                        "new"     => self.do_new(*s.args),
-                        "list"    => self.do_list(*s.args),
-                        "move"    => self.do_move(*s.args),
-                        "size"    => self.do_size(*s.args),
-                        "suggest" => self.do_suggest(*s.args),
+                        "new"           => self.do_new(*s.args),
+                        "list"          => self.do_list(*s.args),
+                        "move"          => self.do_move(*s.args),
+                        "size"          => self.do_size(*s.args),
+                        "suggest"       => self.do_suggest(*s.args),
+                        "serialize"     => self.do_serialize(*s.args),
+                        "board"         => self.do_board(*s.args),
                         x => println!("Unknown subcommand {} encountered", x)
                     },
                     ParsedArgs::Arguments(a) => {
@@ -66,11 +71,13 @@ impl Interface {
                     }
                 }
             };
-            println!();
+            self.shell.empty_line();
         }
+        self.shell.output("Exiting...");
+        self.shell.empty_line();
     }
 
-    fn do_default(&self, args: Arguments) {
+    fn do_default(&self, _args: Arguments) {
 
     }
     
@@ -80,12 +87,18 @@ impl Interface {
             ParsedArgs::Arguments(a) => {
                 let confirm = self.shell.input("Are you sure you want to start a new game? All progress on the current game will be lost. (y/N): ");
                 if self.confirmations.contains(&confirm.to_lowercase()) {
-                    self.game = Game::new(a.args.get("depth").unwrap().parse().unwrap());
+                    let depth: u8 = match a.get_arg("depth") {
+                        Some(d) => d.parse().unwrap(),
+                        None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
+                    };
+                    match a.get_arg("from_fen") {
+                        Some(fen) => self.game = Game::from_fen(&fen, depth),
+                        None => self.game = Game::new(depth)
+                    }
                     self.shell.output("New game started!");
                 } else {
                     self.shell.output("OK, aborting...");
                 }
-                self.shell.empty_line();
             }
         }
     }
@@ -94,10 +107,10 @@ impl Interface {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'list' should not have its own subcommands"),
             ParsedArgs::Arguments(a) => {
-                match a.args.get("type").unwrap().as_str() {
+                match a.get_arg("type").unwrap().as_str() {
                     "moves" => {
                         for m in self.game.get_legal_moves() {
-                            self.shell.output(&self.get_text_for_move(m));
+                            self.shell.output(&self.get_text_for_move(&m));
                         }
                     },
                     x => self.shell.output(&format!("Unrecognized list type: '{}'", x))
@@ -130,7 +143,6 @@ impl Interface {
                         }
                     }
                 }
-                self.shell.empty_line();
             }
         }
     }
@@ -166,8 +178,35 @@ impl Interface {
     fn do_size(&self, args: ParsedArgs) {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'size' should not have its own subcommands"),
-            ParsedArgs::Arguments(_a) => {
-                self.shell.output(&format!("The current game engine has loaded {} positions", self.game.get_engine_size()))
+            ParsedArgs::Arguments(a) => {
+                match a.get_flag("by_level") {
+                    false => self.shell.output(&format!("The game engine has evaluated {} positions", self.game.get_engine_size())),
+                    true => self.game.get_engine_depths().iter().enumerate().for_each(|(index, size)| {
+                        self.shell.output(&format!("Level {} positions evaluated: {}", index, size));
+                    })
+                }
+            }
+        }
+    }
+
+    fn do_board(&self, args: ParsedArgs) {
+        match args {
+            ParsedArgs::SubCommand(_s) => panic!("Subcommand 'board' should not have its own subcommands"),
+            ParsedArgs::Arguments(a) => {
+                let fen = self.game.serialize_board();
+                match a.get_flag("as_fen") {
+                    true => self.shell.output(&fen),
+                    false => {
+                        FenBoardState::from_fen(&fen).board.iter().for_each(|row| {
+                            self.shell.output(&format!("{}", row.iter().map(|square| {
+                                match square {
+                                    Some((c, p)) => get_notation_for_piece(*c, *p).to_string(),
+                                    None => String::from("-"),
+                                }
+                            }).collect::<Vec<String>>().join(" ")));
+                        })
+                    }
+                }
             }
         }
     }
@@ -175,8 +214,23 @@ impl Interface {
     fn do_suggest(&self, args: ParsedArgs) {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'suggest' should not have its own subcommands"),
+            ParsedArgs::Arguments(_a) => {
+                self.shell.output(&self.get_text_for_move(self.game.suggest_move()));
+            }
+        }
+    }
+
+    fn do_serialize(&self, args: ParsedArgs) {
+        match args {
+            ParsedArgs::SubCommand(_s) => panic!("Subcommand 'serialize' should not have its own subcommands"),
             ParsedArgs::Arguments(a) => {
-                
+                match a.get_arg("type") {
+                    Some(arg) => match arg.as_str() {
+                        "board" => self.shell.output(&self.game.serialize_board()),
+                        _ => ()
+                    },
+                    None => ()
+                }
             }
         }
     }
@@ -187,7 +241,7 @@ impl Interface {
         self.shell.output("    2. Rook");
         self.shell.output("    3. Bishop");
         self.shell.output("    4. Knight");
-        let choice = self.shell.input("? ");
+        let choice = self.shell.input("? ").clone();
         match choice.as_str() {
             "1" => return PieceType::Queen,
             "2" => return PieceType::Rook,
@@ -220,6 +274,7 @@ impl Interface {
             },
             Move::EnPassant(e) => {
                 let start_piece = self.game.get_piece_at(e.basic_move.start).unwrap();
+                println!("En passant found for {} {} on {}, taking on {}", start_piece.color.value(), start_piece.piece_type.value(), &BoardSquare::from_value(e.basic_move.start).get_notation_string(), &BoardSquare::from_value(e.basic_move.end).get_notation_string());
                 let end_piece = self.game.get_piece_at(e.capture_square).unwrap();
                 let movement = format!("captures {} {} on {} en passant, moving to", end_piece.color.value(),
                                               end_piece.piece_type.value(), &BoardSquare::from_value(e.capture_square).get_notation_string());
