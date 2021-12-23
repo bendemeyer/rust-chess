@@ -1,5 +1,7 @@
 pub mod squares;
 
+use std::ops::ControlFlow;
+
 use fnv::{FnvHashMap, FnvHashSet};
 
 use crate::util::FnvIndexSet;
@@ -523,20 +525,18 @@ impl BoardLocations {
     pub fn unapply_move(&mut self, old_move: &Move) -> Result<(), InputError> {
         match old_move {
             Move::EnPassant(e) => {
+                self.move_piece(e.basic_move.end, e.basic_move.start)?;
                 match old_move.get_capture() {
                     Some(p) => self.insert_piece(e.capture_square, p),
                     None => return Err(InputError::new("En Passant missing captured piece"))
                 };
-                match self.move_piece(e.basic_move.end, e.basic_move.start) {
-                    Err(e) => return Err(e),
-                    Ok(_) => ()
-                }
             },
             Move::Promotion(p) => {
                 self.change_piece_type(p.basic_move.end, PieceType::Pawn)?;
-                match self.move_piece(p.basic_move.end, p.basic_move.start) {
-                    Err(e) => return Err(e),
-                    Ok(_) => ()
+                self.move_piece(p.basic_move.end, p.basic_move.start)?;
+                match old_move.get_capture() {
+                    Some(piece) => self.insert_piece(p.basic_move.end, piece),
+                    None => ()
                 }
             },
             _ => {
@@ -646,10 +646,11 @@ impl Board {
     }
 
     pub fn get_piece_squares(&self) -> Vec<(u8, &Piece)> {
-        return self.piece_locations.all_pieces(Color::White).iter().chain(self.piece_locations.all_pieces(Color::Black).iter()).fold(Vec::new(), |mut v, square| {
-            v.push((*square, self.piece_locations.piece_at(square).unwrap()));
-            v
-        })
+        return self.piece_locations.all_pieces(Color::White).iter().chain(self.piece_locations.all_pieces(Color::Black).iter())
+            .fold(Vec::new(), |mut v, square| {
+                v.push((*square, self.piece_locations.piece_at(square).unwrap()));
+                v
+            })
     }
 
     fn update_castle_availability(&mut self, new_move: &Move) {
@@ -680,61 +681,33 @@ impl Board {
     fn get_moves_for_piece(&self, square: &u8) -> Vec<Move> {
         let piece = self.piece_locations.piece_at(square).unwrap();
         let movement = get_moves(square, piece);
-        return movement.movement_rays().iter().fold(Vec::new(), |mut moves, ray| {
+        let mut moves: Vec<Move> = Vec::new();
+        for ray in movement.movement_rays() {
             for move_square in ray {
-                match self.piece_locations.piece_at(move_square) {
-                    Some(p) if p.color == self.state.to_move => break,
-                    Some(p) => {
-                        if movement.can_capture(move_square) { 
-                            if piece.piece_type == PieceType::Pawn && pawn_square_is_promotion(piece.color, *square) {
-                                moves.append(&mut create_promotions(*square, *move_square, Some(*p)))
-                            } else {
-                                moves.push(Move::BasicMove(BasicMove { start: *square, end: *move_square, capture: Some(*p) }))
-                            }
-                        }
+                match self.try_move(*square, *move_square, &movement) {
+                    ControlFlow::Continue(new_moves) => { moves.extend(new_moves); },
+                    ControlFlow::Break(new_moves) => {
+                        moves.extend(new_moves);
                         break;
-                    },
-                    None => {
-                        if Some(*move_square) == self.state.en_passant_target && piece.piece_type == PieceType::Pawn && movement.can_capture(move_square) {
-                            let capture_square = get_capture_square_for_en_passant(*square, *move_square);
-                            if !self.en_passant_is_pin(self.state.to_move, *square, capture_square, self.state.get_en_passant_target().unwrap()) {
-                                moves.push(Move::EnPassant(EnPassant {
-                                    basic_move: BasicMove { start: *square, end: *move_square, capture: self.piece_locations.piece_at(&capture_square).map(|p| *p) },
-                                    capture_square: capture_square
-                                }));
-                            }
-                            break
-                        } else if movement.can_move(move_square) {
-                            if piece.piece_type == PieceType::Pawn && pawn_square_is_promotion(piece.color, *move_square) {
-                                moves.append(&mut create_promotions(*square, *move_square, None))
-                            } else if piece.piece_type == PieceType::Pawn && pawn_square_is_starting(piece.color, *square) && pawn_square_is_fourth_rank(piece.color, *move_square) {
-                                moves.push(Move::TwoSquarePawnMove(TwoSquarePawnMove {
-                                    basic_move: BasicMove { start: *square, end: *move_square, capture: None },
-                                    en_passant_target: get_en_passant_target_for_two_square_first_move(piece.color, *move_square)
-                                }));
-                            } else {
-                                moves.push(Move::BasicMove(BasicMove { start: *square, end: *move_square, capture: None }));
-                            }
-                        }
                     }
                 }
             }
-            moves
-        })
+        }
+        return moves;
     }
 
-    fn en_passant_is_pin(&self, king_color: Color, start_square: u8, capture_square: u8, target_square: u8) -> bool {
+    fn en_passant_is_pin(&self, king_color: Color, start_square: u8, end_square: u8, capture_square: u8) -> bool {
         let king_square = self.find_king(king_color);
         let attacking_movement = get_moves(&king_square, &Piece { color: king_color.swap(), piece_type: PieceType::Queen });
-        if !attacking_movement.attacked_squares().contains(&king_square) { return false };
+        if !attacking_movement.attacked_squares().contains(&start_square) { return false };
         for ray in attacking_movement.movement_rays() {
-            if !ray.contains(&king_square) { continue };
+            if !ray.contains(&start_square) { continue };
             for square in ray {
-                if square == &target_square { return false };
+                if square == &end_square { break };
                 if square == &start_square || square == &capture_square { continue };
                 match self.piece_locations.piece_at(square) {
                     Some(p) if p.color != king_color => {
-                        match get_moves(square, p).attacked_squares().contains(&king_square) {
+                        match get_moves(square, p).can_capture(&king_square) {
                             true => return true,
                             false => return false,
                         }
@@ -752,30 +725,48 @@ impl Board {
         let movement = get_moves(&pin.pinned_square, pinned_piece);
         let mut moves: Vec<Move> = Vec::new();
         if movement.can_capture(&pin.pinning_square) {
-            moves.push(Move::BasicMove(BasicMove { start: pin.pinned_square, end: pin.pinning_square, capture: self.piece_locations.piece_at(&pin.pinning_square).map(|p| *p) }))
+            let pinning_piece = self.piece_locations.piece_at(&pin.pinning_square).unwrap();
+            moves.extend(self.build_move(pin.pinned_square, pin.pinning_square, pinned_piece, Some(*pinning_piece)));
         }
-        return pin.pinning_path.iter().fold(moves, |mut acc, square| {
-            if movement.can_move(square) {
-                acc.push(Move::BasicMove(BasicMove { start: pin.pinned_square, end: *square, capture: None }))
+        for block in &pin.pinning_path {
+            if movement.can_move(block) {
+                moves.extend(self.build_move(pin.pinned_square, *block, pinned_piece, None))
             }
-            acc
-        });
+        }
+        return moves;
     }
 
     fn get_legal_moves_from_check(&self, check: &Check, pinned_squares: &FnvHashSet<u8>) -> Vec<Move> {
         let mut moves = self.get_legal_king_moves();
         for square in self.get_pieces_to_move() {
             if pinned_squares.contains(square) { continue }
-            let piece = self.piece_locations.piece_at(square).expect(&format!("Failed looking for a {} piece on {}", self.state.to_move.value(), BoardSquare::from_value(*square).get_notation_string()));
+            let piece = self.piece_locations.piece_at(square).unwrap();
             if piece.piece_type == PieceType::King { continue }
             let movement = get_moves(square, piece);
-            for block in &check.blocking_squares {
-                if movement.can_move(block) {
-                    moves.push(Move::BasicMove(BasicMove { start: *square, end: *block, capture: None }))
+            for ray in movement.movement_rays() {
+                if ray.is_disjoint(&check.blocking_squares) && !ray.contains(&check.checking_square) { continue }
+                for path_square in ray {
+                    if !check.blocking_squares.contains(path_square) && *path_square != check.checking_square {
+                        match self.piece_locations.piece_at(path_square) {
+                            Some(_) => break,
+                            None => continue,
+                        }
+                    }
+                    match self.try_move(*square, *path_square, &movement) {
+                        ControlFlow::Continue(new_moves) => { moves.extend(new_moves); },
+                        ControlFlow::Break(new_moves) => {
+                            moves.extend(new_moves);
+                            break;
+                        }
+                    }
                 }
             }
-            if movement.can_capture(&check.checking_square) {
-                moves.push(Move::BasicMove(BasicMove { start: *square, end: check.checking_square, capture: self.piece_locations.piece_at(&check.checking_square).map(|p| *p) }))
+            if piece.piece_type == PieceType::Pawn && !self.state.get_en_passant_target().is_none() {
+                let end = self.state.en_passant_target.unwrap();
+                let capture_square = get_capture_square_for_en_passant(*square, end);
+                if movement.can_capture(&end) && check.checking_square == capture_square {
+                    moves.extend(self.build_move(*square, end, piece, self.piece_locations.piece_at(&capture_square).map(|p| *p)));
+                }
             }
         }
         return moves;
@@ -851,6 +842,10 @@ impl Board {
         return false;
     }
 
+    pub fn in_check(&self) -> bool {
+        return self.is_check(&self.piece_locations.find_king(self.state.get_move_color()), self.state.get_move_color())
+    }
+
     fn get_checks_and_pins(&self, king_square: &u8, king_color: Color) -> Vec<CheckOrPin> {
         let mut checks_and_pins: Vec<CheckOrPin> = Vec::new();
         for path in get_all_moves(&king_square).movement_rays() {
@@ -907,5 +902,65 @@ impl Board {
             }
         }
         return None;
+    }
+
+    fn try_move(&self, start: u8, end: u8, movement: &MovementDetail) -> ControlFlow<Vec<Move>, Vec<Move>> {
+        let piece = self.piece_locations.piece_at(&start).expect("Invalid Move: No piece at provided start square");
+        let capture = self.piece_locations.piece_at(&end).map(|p| *p);
+        return match capture {
+            Some(p) if p.color == piece.color => ControlFlow::Break(Vec::new()),
+            Some(p) => {
+                if movement.can_capture(&end) {
+                    ControlFlow::Break(self.build_move(start, end, piece, Some(p)))
+                } else {
+                    ControlFlow::Break(Vec::new())
+                }
+            },
+            None => {
+                if piece.piece_type == PieceType::Pawn && end == self.state.get_en_passant_target().unwrap_or(255) && movement.can_capture(&end) {
+                    let capture_square = get_capture_square_for_en_passant(start, end);
+                    let ep_capture = self.piece_locations.piece_at(&capture_square).map(|p| *p);
+                    if self.en_passant_is_pin(piece.color, start, end, capture_square) {
+                        ControlFlow::Break(Vec::new())
+                    } else {
+                        ControlFlow::Break(Vec::from([ Move::EnPassant(EnPassant {
+                            basic_move: BasicMove { start: start, end: end, capture: ep_capture },
+                            capture_square: capture_square,
+                        }) ]))
+                    }
+                } else {
+                    if movement.can_move(&end) {
+                        ControlFlow::Continue(self.build_move(start, end, piece, None))
+                    } else {
+                        ControlFlow::Continue(Vec::new())
+                    }
+                }
+            }
+        }
+    }
+
+    fn build_move(&self, start: u8, end: u8, piece: &Piece, capture: Option<Piece>) -> Vec<Move> {
+        if piece.piece_type == PieceType::Pawn && end == self.state.get_en_passant_target().unwrap_or(255) {
+            let capture_square = get_capture_square_for_en_passant(start, end);
+            let ep_capture = self.piece_locations.piece_at(&capture_square).map(|p| *p);
+            if self.en_passant_is_pin(piece.color, start, end, capture_square) {
+                return Vec::new();
+            } else {
+                return Vec::from([ Move::EnPassant(EnPassant {
+                    basic_move: BasicMove { start: start, end: end, capture: ep_capture },
+                    capture_square: get_capture_square_for_en_passant(start, end),
+                }) ]);
+            }
+        } else if piece.piece_type == PieceType::Pawn && pawn_square_is_promotion(piece.color, end) {
+            return create_promotions(start, end, capture);
+        } else if piece.piece_type == PieceType::Pawn && pawn_square_is_starting(piece.color, start) && pawn_square_is_fourth_rank(piece.color, end) {
+            if !capture.is_none() { panic!("Invalid Move: attempted to create a Two Square Pawn Move with a captured piece!") }
+            return Vec::from([ Move::TwoSquarePawnMove(TwoSquarePawnMove {
+                basic_move: BasicMove { start: start, end: end, capture: capture },
+                en_passant_target: get_en_passant_target_for_two_square_first_move(piece.color, end)
+            }) ]);
+        } else {
+            return Vec::from([ Move::BasicMove(BasicMove { start: start, end: end, capture: capture }) ]);
+        }
     }
 }

@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use tabled::{Table, Style};
+
 use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::BoardSquare}, pieces::{PieceType, movement::Move}}, util::fen::{get_notation_for_piece, FenBoardState}};
 
 use super::arguments::{ArgumentParser, Arguments};
@@ -9,13 +11,13 @@ fn build_argument_parser() -> ArgumentParser {
     let mut builder = ArgumentParser::builder();
     builder.add_subcommand("new").unwrap()
         .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap()
-        .add_named_arg("from_fen", HashSet::from(["--from-fen"]), false, false).unwrap();
+        .add_named_arg("from_fen", HashSet::from(["--from-fen"]), false, false).unwrap()
+        .add_flag_arg("no_confirm", HashSet::from(["--no-confirm"])).unwrap();
     builder.add_subcommand("list").unwrap()
         .add_positional_arg("type", true, false).unwrap();
     builder.add_subcommand("suggest").unwrap()
         .add_positional_arg("count", false, false).unwrap();
-    builder.add_subcommand("size").unwrap()
-        .add_flag_arg("by_level", HashSet::from(["--by-level"])).unwrap();
+    builder.add_subcommand("perft").unwrap();
     builder.add_subcommand("move").unwrap();
     builder.add_subcommand("serialize").unwrap()
         .add_positional_arg("type", true, false).unwrap();
@@ -60,7 +62,7 @@ impl Interface {
                         "new"           => self.do_new(*s.args),
                         "list"          => self.do_list(*s.args),
                         "move"          => self.do_move(*s.args),
-                        "size"          => self.do_size(*s.args),
+                        "perft"         => self.do_perft(*s.args),
                         "suggest"       => self.do_suggest(*s.args),
                         "serialize"     => self.do_serialize(*s.args),
                         "board"         => self.do_board(*s.args),
@@ -85,8 +87,12 @@ impl Interface {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'new' should not have its own subcommands"),
             ParsedArgs::Arguments(a) => {
-                let confirm = self.shell.input("Are you sure you want to start a new game? All progress on the current game will be lost. (y/N): ");
-                if self.confirmations.contains(&confirm.to_lowercase()) {
+                let mut confirmed = a.get_flag("no_confirm");
+                if !confirmed {
+                    let confirm = self.shell.input("Are you sure you want to start a new game? All progress on the current game will be lost. (y/N): ");
+                    confirmed = self.confirmations.contains(&confirm.to_lowercase());
+                }
+                if confirmed {
                     let depth: u8 = match a.get_arg("depth") {
                         Some(d) => d.parse().unwrap(),
                         None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
@@ -175,16 +181,12 @@ impl Interface {
         return chosen_move;
     }
     
-    fn do_size(&self, args: ParsedArgs) {
+    fn do_perft(&self, args: ParsedArgs) {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'size' should not have its own subcommands"),
-            ParsedArgs::Arguments(a) => {
-                match a.get_flag("by_level") {
-                    false => self.shell.output(&format!("The game engine has evaluated {} positions", self.game.get_engine_size())),
-                    true => self.game.get_engine_depths().iter().enumerate().for_each(|(index, size)| {
-                        self.shell.output(&format!("Level {} positions evaluated: {}", index, size));
-                    })
-                }
+            ParsedArgs::Arguments(_a) => {
+                let table = Table::new(self.game.get_perft()).with(Style::pseudo_clean());
+                self.shell.output(&table.to_string())
             }
         }
     }

@@ -7,8 +7,7 @@ use rules::board::{BoardState, squares::BoardSquare};
 
 use crate::rules::{Color, pieces::movement::CastleType};
 
-#[macro_use]
-extern crate lazy_static;
+#[macro_use] extern crate lazy_static;
 
 mod engine;
 mod game;

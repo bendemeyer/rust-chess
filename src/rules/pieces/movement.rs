@@ -176,7 +176,7 @@ impl HasMove for Move {
             &Move::TwoSquarePawnMove(m) => m.basic_move.get_piece_movements(),
             &Move::EnPassant(m) => m.basic_move.get_piece_movements(),
         }
-    } 
+    }
 
     fn get_capture(&self) -> Option<Piece> {
         match &self {
