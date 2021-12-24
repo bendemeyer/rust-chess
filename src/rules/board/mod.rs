@@ -694,16 +694,24 @@ impl Board {
     pub fn unmake_move(&mut self, change: ReversibleBoardChange) {
         self.state.halfmove_clock = change.prior_halfmove_clock;
         self.state.move_number = change.prior_move_number;
+
+        match self.state.en_passant_target {
+            Some(square) => self.id = zobrist_update_remove_en_passant_target(self.id, square),
+            None => ()
+        }
         self.state.en_passant_target = change.prior_en_passant_target;
         match self.state.en_passant_target {
             Some(square) => self.id = zobrist_update_add_en_passant_target(self.id, square),
             None => ()
         }
+
         for castle in &change.revoked_castle_rights {
             self.state.return_castle_right(castle);
             self.id = zobrist_update_gain_castle_right(self.id, castle.color, castle.side)
         }
+
         self.id = zobrist_update_unapply_move(self.id, &change.move_made);
+
         match self.piece_locations.unapply_move(&change.move_made) {
             Err(e) => panic!("{}", e.msg),
             Ok(_) => ()
