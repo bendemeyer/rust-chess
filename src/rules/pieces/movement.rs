@@ -1,5 +1,6 @@
 use fnv::FnvHashSet;
 
+use crate::rules::Color;
 use crate::util::{ControlFlow, FnvIndexSet, FoldHelper, UnwrapsAll};
 
 use crate::rules::board::squares::BoardSquare;
@@ -145,15 +146,37 @@ impl PawnMovementDetail {
 }
 
 
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct PieceMovement {
+    pub color: Color,
+    pub piece_type: PieceType,
     pub start_square: u8,
     pub end_square: u8,
+}
+
+impl PieceMovement {
+    pub fn get_piece(&self) -> Piece {
+        return Piece { color: self.color, piece_type: self.piece_type }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Capture {
+    pub color: Color,
+    pub piece_type: PieceType,
+    pub square: u8,
+}
+
+impl Capture {
+    pub fn get_piece(&self) -> Piece {
+        return Piece { color: self.color, piece_type: self.piece_type }
+    }
 }
 
 pub trait HasMove {
     fn get_piece_movements(&self) -> Vec<PieceMovement>;
 
-    fn get_capture(&self) -> Option<Piece>;
+    fn get_capture(&self) -> Option<Capture>;
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
@@ -178,14 +201,14 @@ impl HasMove for Move {
         }
     }
 
-    fn get_capture(&self) -> Option<Piece> {
+    fn get_capture(&self) -> Option<Capture> {
         match &self {
             &Move::NewGame(_m) => None,
             &Move::BasicMove(m) => m.get_capture(),
             &Move::Castle(m) => m.get_capture(),
             &Move::Promotion(m) => m.basic_move.get_capture(),
             &Move::TwoSquarePawnMove(m) => m.basic_move.get_capture(),
-            &Move::EnPassant(m) => m.basic_move.get_capture(),
+            &Move::EnPassant(m) => m.get_capture(),
         }
     }
 }
@@ -195,23 +218,32 @@ pub struct NewGame {}
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BasicMove {
+    pub piece: Piece,
     pub start: u8,
     pub end: u8,
     pub capture: Option<Piece>,
 }
 
-impl HasMove for BasicMove {
+impl BasicMove {
     fn get_piece_movements(&self) -> Vec<PieceMovement> {
-        return [ PieceMovement { start_square: self.start, end_square: self.end } ].into_iter().collect();
+        return [ PieceMovement {
+            color: self.piece.color,
+            piece_type: self.piece.piece_type,
+            start_square: self.start,
+            end_square: self.end,
+        } ].into_iter().collect();
     }
 
-    fn get_capture(&self) -> Option<Piece> {
-        return self.capture;
+    fn get_capture(&self) -> Option<Capture> {
+        return self.capture.map(|p| {
+            Capture { color: p.color, piece_type: p.piece_type, square: self.end }
+        })
     }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Castle {
+    pub color: Color,
     pub side: CastleType,
     pub king_start: u8,
     pub king_end: u8,
@@ -219,33 +251,59 @@ pub struct Castle {
     pub rook_end: u8,
 }
 
-impl HasMove for Castle {
+impl Castle {
     fn get_piece_movements(&self) -> Vec<PieceMovement> {
         return [
-            PieceMovement { start_square: self.king_start, end_square: self.king_end },
-            PieceMovement { start_square: self.rook_start, end_square: self.rook_end },
+            PieceMovement { color: self.color, piece_type: PieceType::King, start_square: self.king_start, end_square: self.king_end },
+            PieceMovement { color: self.color, piece_type: PieceType::Rook, start_square: self.rook_start, end_square: self.rook_end },
         ].into_iter().collect()
     }
 
-    fn get_capture(&self) -> Option<Piece> {
+    fn get_capture(&self) -> Option<Capture> {
         return None
     }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Promotion {
-    pub promote_to: PieceType,
     pub basic_move: BasicMove,
+    pub promote_to: PieceType,
+}
+
+impl Promotion {
+    pub fn get_all_from_basic_move(base: &BasicMove) -> Vec<Promotion> {
+        return [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight].into_iter().map(|ptype| {
+            Promotion { basic_move: *base, promote_to: ptype }
+        }).collect();
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct TwoSquarePawnMove {
-    pub en_passant_target: u8,
     pub basic_move: BasicMove,
+    pub en_passant_target: u8,
+}
+
+impl TwoSquarePawnMove {
+    pub fn from_basic_move(base: &BasicMove, en_passant_target: u8) -> TwoSquarePawnMove {
+        TwoSquarePawnMove { basic_move: *base, en_passant_target: en_passant_target }
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct EnPassant {
-    pub capture_square: u8,
     pub basic_move: BasicMove,
+    pub capture_square: u8,
+}
+
+impl EnPassant {
+    pub fn from_basic_move(base: &BasicMove, capture_square: u8) -> EnPassant {
+        EnPassant { basic_move: *base, capture_square: capture_square }
+    }
+
+    fn get_capture(&self) -> Option<Capture> {
+        return self.basic_move.capture.map(|p| {
+            Capture { color: p.color, piece_type: p.piece_type, square: self.capture_square }
+        })
+    }
 }

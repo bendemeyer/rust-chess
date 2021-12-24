@@ -1,5 +1,6 @@
 pub mod errors;
 pub mod fen;
+pub mod zobrist;
 
 pub use std::ops::ControlFlow;
 

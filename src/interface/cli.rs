@@ -17,7 +17,8 @@ fn build_argument_parser() -> ArgumentParser {
         .add_positional_arg("type", true, false).unwrap();
     builder.add_subcommand("suggest").unwrap()
         .add_positional_arg("count", false, false).unwrap();
-    builder.add_subcommand("perft").unwrap();
+    builder.add_subcommand("perft").unwrap()
+        .add_named_arg("depth", HashSet::from(["--engine-depth"]), true, false).unwrap();
     builder.add_subcommand("move").unwrap();
     builder.add_subcommand("serialize").unwrap()
         .add_positional_arg("type", true, false).unwrap();
@@ -181,12 +182,18 @@ impl Interface {
         return chosen_move;
     }
     
-    fn do_perft(&self, args: ParsedArgs) {
+    fn do_perft(&mut self, args: ParsedArgs) {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'size' should not have its own subcommands"),
-            ParsedArgs::Arguments(_a) => {
-                let table = Table::new(self.game.get_perft()).with(Style::pseudo_clean());
-                self.shell.output(&table.to_string())
+            ParsedArgs::Arguments(a) => {
+                match a.get_arg("depth") {
+                    Some(arg) => {
+                        let depth: u8 = arg.parse().unwrap();
+                        let table = Table::new(self.game.do_perft(depth).get_analysis()).with(Style::pseudo_clean());
+                        self.shell.output(&table.to_string())
+                    },
+                    None => self.shell.output("Missing required field: 'depth' (use '--engine-depth')")
+                }
             }
         }
     }

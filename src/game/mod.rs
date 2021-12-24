@@ -6,10 +6,10 @@ use crate::{engine::Engine, rules::{Color, pieces::{Piece, movement::Move}, boar
 enum PerftType {
     Size,
     Captures,
-    Checks,
     EnPassants,
-    Promotions,
     Castles,
+    Promotions,
+    Checks,
 }
 
 
@@ -27,10 +27,10 @@ impl Perft {
         match analysis_type {
             PerftType::Size       => analysis_level.size += 1,
             PerftType::Captures   => analysis_level.captures += 1,
-            PerftType::Checks     => analysis_level.checks += 1,
             PerftType::EnPassants => analysis_level.en_passants += 1,
-            PerftType::Promotions => analysis_level.promotions += 1,
             PerftType::Castles    => analysis_level.castles += 1,
+            PerftType::Promotions => analysis_level.promotions += 1,
+            PerftType::Checks     => analysis_level.checks += 1,
         };
     }
 
@@ -80,7 +80,6 @@ pub struct Game {
     engine: Engine,
     move_history: Vec<Move>,
     engine_depth: u8,
-    perft: Perft,
 }
 
 impl Game {
@@ -93,19 +92,13 @@ impl Game {
     }
 
     fn from_board(board: Board, engine_depth: u8) -> Self {
-        let mut perft: Perft = Default::default();
-        let engine = Engine::new(board.clone(), engine_depth, &mut perft);
+        let engine = Engine::new(board.clone(), engine_depth);
         return Self {
             board: board,
             engine: engine,
             move_history: Vec::new(),
             engine_depth: engine_depth,
-            perft: perft,
         }
-    }
-
-    pub fn get_perft(&self) -> Vec<&LevelPerft> {
-        return self.perft.get_analysis();
     }
 
     pub fn suggest_move(&self) -> &Move {
@@ -115,9 +108,13 @@ impl Game {
     pub fn make_move(&mut self, new_move: &Move) {
         self.board.make_move(new_move);
         self.move_history.push(*new_move);
+        self.engine = Engine::new(self.board.clone(), self.engine_depth);
+    }
+
+    pub fn do_perft(&mut self, depth: u8) -> Perft {
         let mut perft: Perft = Default::default();
-        self.engine = Engine::new(self.board.clone(), self.engine_depth, &mut perft);
-        self.perft = perft;
+        self.engine.do_perft(depth, &mut perft);
+        return perft;
     }
 
     pub fn get_legal_moves(&self) -> Vec<Move> {

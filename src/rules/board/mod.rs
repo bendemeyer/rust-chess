@@ -7,6 +7,7 @@ use fnv::{FnvHashMap, FnvHashSet};
 use crate::util::FnvIndexSet;
 use crate::util::errors::InputError;
 use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION, get_notation_for_piece};
+use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_gain_castle_right, zobrist_update_add_en_passant_target, zobrist_update_unapply_move};
 
 use self::squares::{BoardSquare, square_in_row, BoardRow, get_col_and_row_from_square, get_square_from_col_and_row};
 
@@ -147,6 +148,31 @@ pub fn fen_board_from_piece_map(piece_map: &FnvHashMap<u8, Piece>) -> [[Option<(
     return board;
 }
 
+fn zobrist_id_from_fen_state(state: &FenBoardState) -> u64 {
+    let mut changes: Vec<BoardChange> = Vec::new();
+    if state.to_move == Color::Black { changes.push(BoardChange::BlackToMove) };
+    if state.en_passant.is_some() { changes.push(BoardChange::EnPassantTarget(state.en_passant.unwrap().value())) };
+    if state.castling.white_kingside { changes.push(BoardChange::CastleRight(CastleRight { color: Color::White, side: CastleType::Kingside })) };
+    if state.castling.white_queenside { changes.push(BoardChange::CastleRight(CastleRight { color: Color::White, side: CastleType::Queenside })) };
+    if state.castling.black_kingside { changes.push(BoardChange::CastleRight(CastleRight { color: Color::Black, side: CastleType::Kingside })) };
+    if state.castling.black_queenside { changes.push(BoardChange::CastleRight(CastleRight { color: Color::Black, side: CastleType::Queenside })) };
+    for (row_index, row) in state.board.iter().rev().enumerate() {
+        for (col_index, square) in row.iter().enumerate() {
+            match square {
+                Some((c, p)) => {
+                    changes.push(BoardChange::PieceLocation(PieceLocation {
+                        color: *c,
+                        piece_type: *p,
+                        square: get_square_from_col_and_row(col_index as u8, row_index as u8)
+                    }));
+                },
+                None => ()
+            }
+        }
+    }
+    return zobrist_init(changes);
+}
+
 fn board_from_fen_state(state: FenBoardState) -> Board {
     let piece_map = piece_map_from_fen_board(state.board);
     return Board {
@@ -156,13 +182,14 @@ fn board_from_fen_state(state: FenBoardState) -> Board {
             en_passant_target: match state.en_passant { Some(s) => Some(s.value()), None => None },
             halfmove_clock: state.halfmove_timer,
             move_number: state.move_number,
-            castle_availability: BoardCastles {
+            castle_rights: BoardCastles {
                 white_kingside: state.castling.white_kingside,
                 white_queenside: state.castling.white_queenside,
                 black_kingside: state.castling.black_kingside,
                 black_queenside: state.castling.black_queenside,
             }
         },
+        id: zobrist_id_from_fen_state(&state),
     }
 }
 
@@ -171,10 +198,10 @@ fn fen_state_from_board(board: &Board) -> FenBoardState {
         board: fen_board_from_piece_map(board.get_piece_map()),
         to_move: board.state.to_move,
         castling: Castling {
-            white_kingside: board.state.castle_availability.white_kingside,
-            white_queenside: board.state.castle_availability.white_queenside,
-            black_kingside: board.state.castle_availability.black_kingside,
-            black_queenside: board.state.castle_availability.black_queenside,
+            white_kingside: board.state.castle_rights.white_kingside,
+            white_queenside: board.state.castle_rights.white_queenside,
+            black_kingside: board.state.castle_rights.black_kingside,
+            black_queenside: board.state.castle_rights.black_queenside,
         },
         en_passant: match board.state.en_passant_target { Some(n) => Some(BoardSquare::from_value(n)), None => None },
         halfmove_timer: board.state.halfmove_clock,
@@ -213,12 +240,6 @@ fn get_all_moves(square: &u8) -> MovementDetail {
     return MovementDetail::Piece(ALL_PIECE_MOVES.get(square).unwrap());
 }
 
-fn create_promotions(start: u8, end: u8, capture: Option<Piece>) -> Vec<Move> {
-    return [PieceType::Queen, PieceType::Rook, PieceType::Bishop, PieceType::Knight].into_iter().fold(Vec::new(), |mut moves, ptype| {
-        moves.push(Move::Promotion(Promotion { basic_move: BasicMove { start: start, end: end, capture }, promote_to: ptype }));
-        moves
-    });
-}
 
 fn get_castle_details(color: Color, castle_type: CastleType) -> &'static CastlingSquares {
     return CASTLING_MOVES.get(&color).unwrap().get(&castle_type).unwrap()
@@ -301,6 +322,11 @@ impl CastlingSquares {
     }
 }
 
+pub struct CastleRight {
+    pub color: Color,
+    pub side: CastleType,
+}
+
 
 #[derive(Copy, Clone, Debug)]
 pub struct BoardCastles {
@@ -325,7 +351,7 @@ impl Default for BoardCastles {
 #[derive(Copy, Clone, Default)]
 pub struct BoardState {
     to_move: Color,
-    castle_availability: BoardCastles,
+    castle_rights: BoardCastles,
     en_passant_target: Option<u8>,
     move_number: u8,
     halfmove_clock: u8,
@@ -352,8 +378,10 @@ impl BoardState {
         self.to_move = self.to_move.swap();
     }
 
-    pub fn clear_en_passant_target(&mut self) {
+    pub fn clear_en_passant_target(&mut self) -> Option<u8> {
+        let old_target = self.en_passant_target;
         self.en_passant_target = None;
+        return old_target;
     }
 
     pub fn set_en_passant_target(&mut self, square: u8) {
@@ -364,21 +392,30 @@ impl BoardState {
         return self.en_passant_target
     }
 
-    pub fn can_castle(&self, color: Color, side: CastleType) -> bool {
-        match (color, side) {
-            (Color::White, CastleType::Kingside) => self.castle_availability.white_kingside,
-            (Color::White, CastleType::Queenside) => self.castle_availability.white_queenside,
-            (Color::Black, CastleType::Kingside) => self.castle_availability.black_kingside,
-            (Color::Black, CastleType::Queenside) => self.castle_availability.black_queenside,
+    pub fn can_castle(&self, castle: &CastleRight) -> bool {
+        match (castle.color, castle.side) {
+            (Color::White, CastleType::Kingside) => self.castle_rights.white_kingside,
+            (Color::White, CastleType::Queenside) => self.castle_rights.white_queenside,
+            (Color::Black, CastleType::Kingside) => self.castle_rights.black_kingside,
+            (Color::Black, CastleType::Queenside) => self.castle_rights.black_queenside,
         }
     }
 
-    pub fn disable_castle(&mut self, color: Color, side: CastleType) {
-        match (color, side) {
-            (Color::White, CastleType::Kingside) => self.castle_availability.white_kingside = false,
-            (Color::White, CastleType::Queenside) => self.castle_availability.white_queenside = false,
-            (Color::Black, CastleType::Kingside) => self.castle_availability.black_kingside = false,
-            (Color::Black, CastleType::Queenside) => self.castle_availability.black_queenside = false,
+    pub fn revoke_castle_right(&mut self, castle: &CastleRight) {
+        match (castle.color, castle.side) {
+            (Color::White, CastleType::Kingside) => self.castle_rights.white_kingside = false,
+            (Color::White, CastleType::Queenside) => self.castle_rights.white_queenside = false,
+            (Color::Black, CastleType::Kingside) => self.castle_rights.black_kingside = false,
+            (Color::Black, CastleType::Queenside) => self.castle_rights.black_queenside = false,
+        }
+    }
+
+    pub fn return_castle_right(&mut self, castle: &CastleRight) {
+        match (castle.color, castle.side) {
+            (Color::White, CastleType::Kingside) => self.castle_rights.white_kingside = true,
+            (Color::White, CastleType::Queenside) => self.castle_rights.white_queenside = true,
+            (Color::Black, CastleType::Kingside) => self.castle_rights.black_kingside = true,
+            (Color::Black, CastleType::Queenside) => self.castle_rights.black_queenside = true,
         }
     }
 }
@@ -527,7 +564,7 @@ impl BoardLocations {
             Move::EnPassant(e) => {
                 self.move_piece(e.basic_move.end, e.basic_move.start)?;
                 match old_move.get_capture() {
-                    Some(p) => self.insert_piece(e.capture_square, p),
+                    Some(capture) => self.insert_piece(e.capture_square, capture.get_piece()),
                     None => return Err(InputError::new("En Passant missing captured piece"))
                 };
             },
@@ -535,7 +572,7 @@ impl BoardLocations {
                 self.change_piece_type(p.basic_move.end, PieceType::Pawn)?;
                 self.move_piece(p.basic_move.end, p.basic_move.start)?;
                 match old_move.get_capture() {
-                    Some(piece) => self.insert_piece(p.basic_move.end, piece),
+                    Some(capture) => self.insert_piece(p.basic_move.end, capture.get_piece()),
                     None => ()
                 }
             },
@@ -543,7 +580,7 @@ impl BoardLocations {
                 for movement in old_move.get_piece_movements() {
                     self.move_piece(movement.end_square, movement.start_square)?;
                     match old_move.get_capture() {
-                        Some(p) => self.insert_piece(movement.end_square, p),
+                        Some(capture) => self.insert_piece(movement.end_square, capture.get_piece()),
                         None => ()
                     }
                 }
@@ -556,7 +593,10 @@ impl BoardLocations {
 
 pub struct ReversibleBoardChange {
     pub move_made: Move,
-    pub prior_state: BoardState,
+    pub revoked_castle_rights: Vec<CastleRight>,
+    pub prior_en_passant_target: Option<u8>,
+    pub prior_halfmove_clock: u8,
+    pub prior_move_number: u8,
 }
 
 
@@ -564,6 +604,7 @@ pub struct ReversibleBoardChange {
 pub struct Board {
     pub piece_locations: BoardLocations,
     pub state: BoardState,
+    pub id: u64,
 }
 
 impl Board {
@@ -613,10 +654,20 @@ impl Board {
     pub fn make_move(&mut self, new_move: &Move) -> ReversibleBoardChange {
         let result = ReversibleBoardChange {
             move_made: *new_move,
-            prior_state: *self.get_state(),
+            revoked_castle_rights: self.revoke_castle_rights(new_move),
+            prior_en_passant_target: self.state.get_en_passant_target(),
+            prior_halfmove_clock: self.state.halfmove_clock,
+            prior_move_number: self.state.move_number,
         };
+        self.id = zobrist_update_apply_move(self.id, new_move);
+        for castle in &result.revoked_castle_rights {
+            self.id = zobrist_update_lose_castle_right(self.id, castle.color, castle.side);
+        }
+        match self.state.clear_en_passant_target() {
+            Some(square) => self.id = zobrist_update_remove_en_passant_target(self.id, square),
+            None => (),
+        }
         self.state.increment_halfmove_clock();
-        self.state.clear_en_passant_target();
         match self.piece_locations.apply_move(new_move) {
             Err(e) => panic!("{}", e.msg),
             Ok((piece, cap)) => {
@@ -624,25 +675,41 @@ impl Board {
                 match cap { Some(_) => self.state.reset_halfmove_clock(), None => () }
             }
         }
-        self.update_castle_availability(new_move);
         
         match new_move {
-            Move::TwoSquarePawnMove(m) => self.state.set_en_passant_target(m.en_passant_target),
+            Move::TwoSquarePawnMove(m) => {
+                self.state.set_en_passant_target(m.en_passant_target);
+                self.id = zobrist_update_add_en_passant_target(self.id, m.en_passant_target);
+            },
             Move::Promotion(_) => self.state.reset_halfmove_clock(),
             _ => ()
         }
-        if self.state.get_move_color() == Color::Black { self.state.increment_move_number() }
+        if self.state.get_move_color() == Color::Black { self.state.increment_move_number(); }
         self.state.change_move_color();
+        self.id = zobrist_update_turn(self.id, self.state.get_move_color());
 
         return result;
     }
 
     pub fn unmake_move(&mut self, change: ReversibleBoardChange) {
-        self.state = change.prior_state;
+        self.state.halfmove_clock = change.prior_halfmove_clock;
+        self.state.move_number = change.prior_move_number;
+        self.state.en_passant_target = change.prior_en_passant_target;
+        match self.state.en_passant_target {
+            Some(square) => self.id = zobrist_update_add_en_passant_target(self.id, square),
+            None => ()
+        }
+        for castle in &change.revoked_castle_rights {
+            self.state.return_castle_right(castle);
+            self.id = zobrist_update_gain_castle_right(self.id, castle.color, castle.side)
+        }
+        self.id = zobrist_update_unapply_move(self.id, &change.move_made);
         match self.piece_locations.unapply_move(&change.move_made) {
             Err(e) => panic!("{}", e.msg),
             Ok(_) => ()
         }
+        self.state.change_move_color();
+        self.id = zobrist_update_turn(self.id, self.state.get_move_color());
     }
 
     pub fn get_piece_squares(&self) -> Vec<(u8, &Piece)> {
@@ -653,29 +720,63 @@ impl Board {
             })
     }
 
-    fn update_castle_availability(&mut self, new_move: &Move) {
+    fn revoke_castle_rights(&mut self, new_move: &Move) -> Vec<CastleRight> {
+        let mut revoked_rights: Vec<CastleRight> = Vec::new();
         for m in new_move.get_piece_movements() {
             if m.start_square == BoardSquare::E1.value() || m.end_square == BoardSquare::E1.value() {
-                self.state.disable_castle(Color::White, CastleType::Kingside);
-                self.state.disable_castle(Color::White, CastleType::Queenside);
+                let kingside = CastleRight { color: Color::White, side: CastleType::Kingside };
+                let queenside = CastleRight { color: Color::White, side: CastleType::Queenside };
+                if self.state.can_castle(&kingside) {
+                    self.state.revoke_castle_right(&kingside);
+                    revoked_rights.push(kingside);
+                }
+                if self.state.can_castle(&queenside) {
+                    self.state.revoke_castle_right(&queenside);
+                    revoked_rights.push(queenside);
+                }
             }
             if m.start_square == BoardSquare::E8.value() || m.end_square == BoardSquare::E8.value() {
-                self.state.disable_castle(Color::Black, CastleType::Kingside);
-                self.state.disable_castle(Color::Black, CastleType::Queenside);
+                let kingside = CastleRight { color: Color::Black, side: CastleType::Kingside };
+                let queenside = CastleRight { color: Color::Black, side: CastleType::Queenside };
+                if self.state.can_castle(&kingside) {
+                    self.state.revoke_castle_right(&kingside);
+                    revoked_rights.push(kingside);
+                }
+                if self.state.can_castle(&queenside) {
+                    self.state.revoke_castle_right(&queenside);
+                    revoked_rights.push(queenside);
+                }
             }
             if m.start_square == BoardSquare::H1.value() || m.end_square == BoardSquare::H1.value() {
-                self.state.disable_castle(Color::White, CastleType::Kingside);
+                let castle = CastleRight { color: Color::White, side: CastleType::Kingside };
+                if self.state.can_castle(&castle) {
+                    self.state.revoke_castle_right(&castle);
+                    revoked_rights.push(castle);
+                }
             }
             if m.start_square == BoardSquare::A1.value() || m.end_square == BoardSquare::A1.value() {
-                self.state.disable_castle(Color::White, CastleType::Queenside);
+                let castle = CastleRight { color: Color::White, side: CastleType::Queenside };
+                if self.state.can_castle(&castle) {
+                    self.state.revoke_castle_right(&castle);
+                    revoked_rights.push(castle);
+                }
             }
             if m.start_square == BoardSquare::H8.value() || m.end_square == BoardSquare::H8.value() {
-                self.state.disable_castle(Color::Black, CastleType::Kingside);
+                let castle = CastleRight { color: Color::Black, side: CastleType::Kingside };
+                if self.state.can_castle(&castle) {
+                    self.state.revoke_castle_right(&castle);
+                    revoked_rights.push(castle);
+                }
             }
             if m.start_square == BoardSquare::A8.value() || m.end_square == BoardSquare::A8.value() {
-                self.state.disable_castle(Color::Black, CastleType::Queenside);
+                let castle = CastleRight { color: Color::Black, side: CastleType::Queenside };
+                if self.state.can_castle(&castle) {
+                    self.state.revoke_castle_right(&castle);
+                    revoked_rights.push(castle);
+                }
             }
         }
+        return revoked_rights;
     }
 
     fn get_moves_for_piece(&self, square: &u8) -> Vec<Move> {
@@ -780,12 +881,12 @@ impl Board {
                 Some(p) if p.color == self.state.to_move => (),
                 Some(p) => {
                     if !self.is_check(square, self.state.to_move) {
-                        moves.push(Move::BasicMove(BasicMove { start: king_location, end: *square, capture: Some(*p) }));
+                        moves.push(Move::BasicMove(BasicMove { piece: *king, start: king_location, end: *square, capture: Some(*p) }));
                     }
                 },
                 None => {
                     if !self.is_check(square, self.state.to_move) {
-                        moves.push(Move::BasicMove(BasicMove { start: king_location, end: *square, capture: None }));
+                        moves.push(Move::BasicMove(BasicMove { piece: *king, start: king_location, end: *square, capture: None }));
                     }
                 }
             }
@@ -800,7 +901,7 @@ impl Board {
     }
 
     fn get_castle(&self, color: Color, side: CastleType) -> Option<Move> {
-        if !self.state.can_castle(color, side) { return None };
+        if !self.state.can_castle(&CastleRight{ color: color, side: side }) { return None };
         let detail = get_castle_details(color, side);
         for square in &detail.transit_squares {
             match self.piece_locations.piece_at(square) { Some(_) => return None, None => () }
@@ -810,6 +911,7 @@ impl Board {
         }
         if self.is_check(&detail.king_end, color) { return None };
         return Some(Move::Castle(Castle {
+            color: color,
             side: side,
             king_start: detail.king_start,
             king_end: detail.king_end,
@@ -924,7 +1026,7 @@ impl Board {
                         ControlFlow::Break(Vec::new())
                     } else {
                         ControlFlow::Break(Vec::from([ Move::EnPassant(EnPassant {
-                            basic_move: BasicMove { start: start, end: end, capture: ep_capture },
+                            basic_move: BasicMove { piece: *piece, start: start, end: end, capture: ep_capture },
                             capture_square: capture_square,
                         }) ]))
                     }
@@ -940,27 +1042,25 @@ impl Board {
     }
 
     fn build_move(&self, start: u8, end: u8, piece: &Piece, capture: Option<Piece>) -> Vec<Move> {
+        let basic_move = BasicMove { piece: *piece, start: start, end: end, capture: capture };
         if piece.piece_type == PieceType::Pawn && end == self.state.get_en_passant_target().unwrap_or(255) {
             let capture_square = get_capture_square_for_en_passant(start, end);
-            let ep_capture = self.piece_locations.piece_at(&capture_square).map(|p| *p);
             if self.en_passant_is_pin(piece.color, start, end, capture_square) {
                 return Vec::new();
             } else {
-                return Vec::from([ Move::EnPassant(EnPassant {
-                    basic_move: BasicMove { start: start, end: end, capture: ep_capture },
-                    capture_square: get_capture_square_for_en_passant(start, end),
-                }) ]);
+                match capture {
+                    Some(_) => return Vec::from([ Move::EnPassant(EnPassant::from_basic_move(&basic_move, capture_square)) ]),
+                    None => panic!("Invalid Move: Cannot create an en passant move without a capture!"),
+                }
             }
         } else if piece.piece_type == PieceType::Pawn && pawn_square_is_promotion(piece.color, end) {
-            return create_promotions(start, end, capture);
+            return Promotion::get_all_from_basic_move(&basic_move).into_iter().map(|p| { Move::Promotion(p) }).collect()
         } else if piece.piece_type == PieceType::Pawn && pawn_square_is_starting(piece.color, start) && pawn_square_is_fourth_rank(piece.color, end) {
-            if !capture.is_none() { panic!("Invalid Move: attempted to create a Two Square Pawn Move with a captured piece!") }
-            return Vec::from([ Move::TwoSquarePawnMove(TwoSquarePawnMove {
-                basic_move: BasicMove { start: start, end: end, capture: capture },
-                en_passant_target: get_en_passant_target_for_two_square_first_move(piece.color, end)
-            }) ]);
+            if !capture.is_none() { panic!("Invalid Move: Cannot create a two square pawn move with a captured piece!") }
+            let en_passant_target = get_en_passant_target_for_two_square_first_move(piece.color, end);
+            return Vec::from([ Move::TwoSquarePawnMove(TwoSquarePawnMove::from_basic_move(&basic_move, en_passant_target)) ]);
         } else {
-            return Vec::from([ Move::BasicMove(BasicMove { start: start, end: end, capture: capture }) ]);
+            return Vec::from([ Move::BasicMove(basic_move) ]);
         }
     }
 }
