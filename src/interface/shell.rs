@@ -25,7 +25,7 @@ impl InteractiveShell {
             parser: parser,
         };
 
-        let _ = OpenOptions::new().create_new(true).open(HISTORY_FILE);
+        let _ = OpenOptions::new().create_new(true).write(true).open(HISTORY_FILE);
         shell.editor.load_history(HISTORY_FILE).unwrap();
         shell.editor.bind_sequence(KeyEvent { 0: KeyCode::Up, 1: Modifiers::NONE }, Cmd::PreviousHistory);
         shell.editor.bind_sequence(KeyEvent { 0: KeyCode::Down, 1: Modifiers::NONE }, Cmd::NextHistory);

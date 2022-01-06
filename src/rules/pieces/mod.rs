@@ -1,7 +1,6 @@
 pub mod movement;
 
-use fnv::FnvHashMap;
-
+use fxhash::FxHashMap;
 use movement::MovementVector;
 use super::Color;
 
@@ -116,7 +115,7 @@ pub static KING_MOVE_VECTORS: [MovementVector; 8] = [
 
 
 lazy_static! {
-    pub static ref PIECE_MOVE_VECTOR_MAP: FnvHashMap<PieceType, Vec<&'static MovementVector>> = FnvHashMap::from_iter([
+    pub static ref PIECE_MOVE_VECTOR_MAP: FxHashMap<PieceType, Vec<&'static MovementVector>> = FxHashMap::from_iter([
         (PieceType::Knight, Vec::from_iter(KNIGHT_MOVE_VECTORS.iter())),
         (PieceType::Bishop, Vec::from_iter(BISHOP_MOVE_VECTORS.iter())),
         (PieceType::Rook, Vec::from_iter(ROOK_MOVE_VECTORS.iter())),

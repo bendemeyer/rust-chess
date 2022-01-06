@@ -1,14 +1,16 @@
+pub mod bitboards;
 pub mod squares;
 
 use std::ops::ControlFlow;
 
-use fnv::{FnvHashMap, FnvHashSet};
+use fxhash::{FxHashMap, FxHashSet};
 
-use crate::util::FnvIndexSet;
+use crate::util::FxIndexSet;
 use crate::util::errors::InputError;
 use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION, get_notation_for_piece};
 use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_gain_castle_right, zobrist_update_add_en_passant_target, zobrist_update_unapply_move};
 
+use self::bitboards::{get_bit_for_square, set_bit_at_square, unset_bit_at_square};
 use self::squares::{BoardSquare, square_in_row, BoardRow, get_col_and_row_from_square, get_square_from_col_and_row};
 
 use super::Color;
@@ -17,21 +19,21 @@ use super::pieces::movement::{BasicMove, Castle, CastleType, EnPassant, HasMove,
 
 
 lazy_static! {
-    pub static ref BOARD_PIECE_MOVES: FnvHashMap<u8, FnvHashMap<PieceType, PieceMovementDetail>> = FnvHashMap::from_iter((0u8..=63u8).into_iter().map(|square| {
-        (square, FnvHashMap::from_iter(PIECE_MOVE_VECTOR_MAP.iter().map(|(ptype, vectors)| {
+    pub static ref BOARD_PIECE_MOVES: FxHashMap<u8, FxHashMap<PieceType, PieceMovementDetail>> = FxHashMap::from_iter((0u8..=63u8).into_iter().map(|square| {
+        (square, FxHashMap::from_iter(PIECE_MOVE_VECTOR_MAP.iter().map(|(ptype, vectors)| {
             (*ptype, build_movement_detail(square, vectors))
         })))
     }));
 
-    static ref ALL_PIECE_MOVES: FnvHashMap<u8, PieceMovementDetail> = BOARD_PIECE_MOVES.iter().map(|(square, piece_map)| {
+    static ref ALL_PIECE_MOVES: FxHashMap<u8, PieceMovementDetail> = BOARD_PIECE_MOVES.iter().map(|(square, piece_map)| {
         (*square, PieceMovementDetail::from_static_vectors([
             piece_map.get(&PieceType::Queen).unwrap().rays.clone(),
             piece_map.get(&PieceType::Knight).unwrap().rays.clone(),
         ].into_iter().flatten().collect()))
     }).collect();
 
-    static ref BOARD_PAWN_MOVES: FnvHashMap<u8, FnvHashMap<Color, PawnMovementDetail>> = FnvHashMap::from_iter((0u8..=63u8).into_iter().map(|square| {
-        (square, FnvHashMap::from_iter([Color::White, Color::Black].into_iter().map(|color| {
+    static ref BOARD_PAWN_MOVES: FxHashMap<u8, FxHashMap<Color, PawnMovementDetail>> = FxHashMap::from_iter((0u8..=63u8).into_iter().map(|square| {
+        (square, FxHashMap::from_iter([Color::White, Color::Black].into_iter().map(|color| {
             (color, match pawn_square_is_invalid(square) {
                 true => PawnMovementDetail::default(),
                 false => build_pawn_movement_detail(
@@ -43,12 +45,12 @@ lazy_static! {
         })))
     }));
 
-    static ref CASTLING_MOVES: FnvHashMap<Color, FnvHashMap<CastleType, CastlingSquares>> = FnvHashMap::from_iter([
-        (Color::White, FnvHashMap::from_iter([
+    static ref CASTLING_MOVES: FxHashMap<Color, FxHashMap<CastleType, CastlingSquares>> = FxHashMap::from_iter([
+        (Color::White, FxHashMap::from_iter([
             (CastleType::Kingside, CastlingSquares::from_color_and_type(Color::White, CastleType::Kingside)),
             (CastleType::Queenside, CastlingSquares::from_color_and_type(Color::White, CastleType::Queenside))
         ].into_iter())),
-        (Color::Black, FnvHashMap::from_iter([
+        (Color::Black, FxHashMap::from_iter([
             (CastleType::Kingside, CastlingSquares::from_color_and_type(Color::Black, CastleType::Kingside)),
             (CastleType::Queenside, CastlingSquares::from_color_and_type(Color::Black, CastleType::Queenside))
         ].into_iter())),
@@ -111,8 +113,8 @@ fn get_pawn_vectors(color: Color, square: u8, attacking: bool) -> Vec<&'static M
 }
 
 
-fn piece_map_from_fen_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> FnvHashMap<u8, Piece> {
-    let mut piece_map: FnvHashMap<u8, Piece> = Default::default();
+fn piece_map_from_fen_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> FxHashMap<u8, Piece> {
+    let mut piece_map: FxHashMap<u8, Piece> = Default::default();
     board.into_iter().rev().enumerate().for_each(|(row_index, row)| {
         row.into_iter().enumerate().for_each(|(col_index, option)| {
             match option {
@@ -138,7 +140,7 @@ fn print_fen_board(board: [[Option<(Color, PieceType)>; 8]; 8]) {
     })
 }
 
-pub fn fen_board_from_piece_map(piece_map: &FnvHashMap<u8, Piece>) -> [[Option<(Color, PieceType)>; 8]; 8] {
+pub fn fen_board_from_piece_map(piece_map: &FxHashMap<u8, Piece>) -> [[Option<(Color, PieceType)>; 8]; 8] {
     let mut board: [[Option<(Color, PieceType)>; 8]; 8] = Default::default();
     (0u8..=7u8).rev().enumerate().for_each(|(row, index )| {
         (0u8..=7u8).for_each(|col| {
@@ -263,13 +265,13 @@ enum CheckOrPin {
 
 pub struct Check {
     pub checking_square: u8,
-    pub blocking_squares: FnvIndexSet<u8>,
+    pub blocking_squares: FxIndexSet<u8>,
 }
 
 pub struct Pin {
     pub pinned_square: u8,
     pub pinning_square: u8,
-    pub pinning_path: FnvIndexSet<u8>,
+    pub pinning_path: FxIndexSet<u8>,
 }
 
 
@@ -423,21 +425,22 @@ impl BoardState {
 
 #[derive(Clone, Default)]
 pub struct BoardLocations {
-    piece_map: FnvHashMap<u8, Piece>,
-    all_white_pieces: FnvIndexSet<u8>,
-    white_king: u8,
-    all_black_pieces: FnvIndexSet<u8>,
-    black_king: u8,
+    piece_map: FxHashMap<u8, Piece>,
+    all_white_pieces: u64,
+    white_king: u64,
+    all_black_pieces: u64,
+    black_king: u64,
 }
 
 impl BoardLocations {
-    pub fn from_piece_map(map: FnvHashMap<u8, Piece>) -> Self {
+    pub fn from_piece_map(map: FxHashMap<u8, Piece>) -> Self {
         let mut locs: Self = map.clone().into_iter().fold(Default::default(), |mut locs, (s, p)| {
-            match (p.color, p.piece_type) {
-                (Color::White, PieceType::King)   => { locs.all_white_pieces.insert(s); locs.white_king = s; },
-                (Color::White, _)                 => { locs.all_white_pieces.insert(s); },
-                (Color::Black, PieceType::King)   => { locs.all_black_pieces.insert(s); locs.black_king = s; },
-                (Color::Black, _)                 => { locs.all_black_pieces.insert(s); },
+            locs.set_square(s, p.color);
+            if p.piece_type == PieceType::King {
+                match p.color {
+                    Color::White => locs.white_king = get_bit_for_square(s),
+                    Color::Black => locs.black_king = get_bit_for_square(s),
+                }
             }
             locs
         });
@@ -445,35 +448,56 @@ impl BoardLocations {
         return locs;
     }
 
-    pub fn get_piece_map(&self) -> &FnvHashMap<u8, Piece> {
+    pub fn get_piece_map(&self) -> &FxHashMap<u8, Piece> {
         return &self.piece_map;
     }
 
     pub fn find_king(&self, color: Color) -> u8 {
-        return match color { Color::White => self.white_king, Color::Black => self.black_king }
+        return match color {
+            Color::White => self.white_king.trailing_zeros() as u8,
+            Color::Black => self.black_king.trailing_zeros() as u8
+        }
     }
 
     pub fn piece_at(&self, square: &u8) -> Option<&Piece> {
         return self.piece_map.get(square);
     }
 
-    pub fn all_pieces(&self, color: Color) -> &FnvIndexSet<u8> {
-        match color { Color::White => &self.all_white_pieces, Color::Black => &self.all_black_pieces }
+    pub fn all_pieces(&self, color: Color) -> Vec<u8> {
+        let mut board = match color { Color::White => self.all_white_pieces, Color::Black => self.all_black_pieces };
+        let mut result: Vec<u8> = Vec::new();
+        loop {
+            let square = board.trailing_zeros() as u8;
+            if square == 64 { return result }
+            result.push(square);
+            board = unset_bit_at_square(board, square)
+        }
+    }
+
+    fn set_square(&mut self, square: u8, color: Color) {
+        match color {
+            Color::White => self.all_white_pieces = set_bit_at_square(self.all_white_pieces, square),
+            Color::Black => self.all_black_pieces = set_bit_at_square(self.all_black_pieces, square),
+        }
+    }
+
+    fn unset_square(&mut self, square: u8, color: Color) {
+        match color {
+            Color::White => self.all_white_pieces = unset_bit_at_square(self.all_white_pieces, square),
+            Color::Black => self.all_black_pieces = unset_bit_at_square(self.all_black_pieces, square),
+        }
     }
 
     fn insert_piece(&mut self, square: u8, piece: Piece) {
-        match piece.color {
-            Color::White => self.all_white_pieces.insert(square),
-            Color::Black => self.all_black_pieces.insert(square)
-        };
+        self.set_square(square, piece.color);
         self.piece_map.insert(square, piece);
     }
 
     fn try_capture_piece(&mut self, square: u8) -> Option<Piece> {
         match self.piece_map.remove(&square) {
-            Some(p) => match p.color {
-                Color::White => { self.all_white_pieces.remove(&square); Some(p) },
-                Color::Black => { self.all_black_pieces.remove(&square); Some(p) },
+            Some(p) => {
+                self.unset_square(square, p.color);
+                Some(p)
             }
             None => None
         }
@@ -484,17 +508,13 @@ impl BoardLocations {
             None => return Err(InputError::new(&format!("No piece to move at square {}", start))),
             Some(p) => {
                 self.piece_map.insert(end, p);
-                match p.color {
-                    Color::White => {
-                        self.all_white_pieces.remove(&start);
-                        self.all_white_pieces.insert(end);
-                        if p.piece_type == PieceType::King { self.white_king = end };
-                    },
-                    Color::Black => {
-                        self.all_black_pieces.remove(&start);
-                        self.all_black_pieces.insert(end);
-                        if p.piece_type == PieceType::King { self.black_king = end };
-                    },
+                self.unset_square(start, p.color);
+                self.set_square(end, p.color);
+                if p.piece_type == PieceType::King {
+                    match p.color {
+                        Color::White => self.white_king = get_bit_for_square(end),
+                        Color::Black => self.black_king = get_bit_for_square(end),
+                    }
                 }
             }
         };
@@ -621,7 +641,7 @@ impl Board {
         return fen_state_from_board(self).to_fen();
     }
 
-    pub fn get_piece_map(&self) -> &FnvHashMap<u8, Piece> {
+    pub fn get_piece_map(&self) -> &FxHashMap<u8, Piece> {
         return self.piece_locations.get_piece_map();
     }
 
@@ -633,18 +653,18 @@ impl Board {
         let king_square = self.find_king(self.state.to_move);
         let mut moves: Vec<Move> = Vec::new();
         let (checks, pins) = parse_checks_and_pins(self.get_checks_and_pins(&king_square, self.state.to_move));
-        let pinned_squares: FnvHashSet<u8> = pins.iter().map(|p| p.pinned_square).collect();
+        let pinned_squares: FxHashSet<u8> = pins.iter().map(|p| p.pinned_square).collect();
         if checks.len() > 1 { return self.get_legal_king_moves() }
         if !checks.is_empty() { return self.get_legal_moves_from_check(checks.first().unwrap(), &pinned_squares) }
         for pin in pins {
             moves.append(&mut (self.get_legal_moves_for_pinned_piece(&pin)))
         }
         for square in self.get_pieces_to_move() {
-            if pinned_squares.contains(square) { continue };
-            if *square == self.find_king(self.state.to_move) {
+            if pinned_squares.contains(&square) { continue };
+            if square == self.find_king(self.state.to_move) {
                 moves.append(&mut (self.get_legal_king_moves()))
             } else {
-                moves.append(&mut (self.get_moves_for_piece(square)))
+                moves.append(&mut (self.get_moves_for_piece(&square)))
             }
         }
         moves.append(&mut (self.get_castle_moves(self.state.to_move)));
@@ -718,14 +738,6 @@ impl Board {
         }
         self.state.change_move_color();
         self.id = zobrist_update_turn(self.id, self.state.get_move_color());
-    }
-
-    pub fn get_piece_squares(&self) -> Vec<(u8, &Piece)> {
-        return self.piece_locations.all_pieces(Color::White).iter().chain(self.piece_locations.all_pieces(Color::Black).iter())
-            .fold(Vec::new(), |mut v, square| {
-                v.push((*square, self.piece_locations.piece_at(square).unwrap()));
-                v
-            })
     }
 
     fn revoke_castle_rights(&mut self, new_move: &Move) -> Vec<CastleRight> {
@@ -845,13 +857,13 @@ impl Board {
         return moves;
     }
 
-    fn get_legal_moves_from_check(&self, check: &Check, pinned_squares: &FnvHashSet<u8>) -> Vec<Move> {
+    fn get_legal_moves_from_check(&self, check: &Check, pinned_squares: &FxHashSet<u8>) -> Vec<Move> {
         let mut moves = self.get_legal_king_moves();
         for square in self.get_pieces_to_move() {
-            if pinned_squares.contains(square) { continue }
-            let piece = self.piece_locations.piece_at(square).unwrap();
+            if pinned_squares.contains(&square) { continue }
+            let piece = self.piece_locations.piece_at(&square).unwrap();
             if piece.piece_type == PieceType::King { continue }
-            let movement = get_moves(square, piece);
+            let movement = get_moves(&square, piece);
             for ray in movement.movement_rays() {
                 if ray.is_disjoint(&check.blocking_squares) && !ray.contains(&check.checking_square) { continue }
                 for path_square in ray {
@@ -861,7 +873,7 @@ impl Board {
                             None => continue,
                         }
                     }
-                    match self.try_move(*square, *path_square, &movement) {
+                    match self.try_move(square, *path_square, &movement) {
                         ControlFlow::Continue(new_moves) => { moves.extend(new_moves); },
                         ControlFlow::Break(new_moves) => {
                             moves.extend(new_moves);
@@ -872,9 +884,9 @@ impl Board {
             }
             if piece.piece_type == PieceType::Pawn && !self.state.get_en_passant_target().is_none() {
                 let end = self.state.en_passant_target.unwrap();
-                let capture_square = get_capture_square_for_en_passant(*square, end);
+                let capture_square = get_capture_square_for_en_passant(square, end);
                 if movement.can_capture(&end) && check.checking_square == capture_square {
-                    moves.extend(self.build_move(*square, end, piece, self.piece_locations.piece_at(&capture_square).map(|p| *p)));
+                    moves.extend(self.build_move(square, end, piece, self.piece_locations.piece_at(&capture_square).map(|p| *p)));
                 }
             }
         }
@@ -935,10 +947,10 @@ impl Board {
         }
     }
 
-    fn get_pieces_to_move(&self) -> &FnvIndexSet<u8> {
+    fn get_pieces_to_move(&self) -> Vec<u8> {
         return match self.state.get_move_color() {
-            Color::White => &self.piece_locations.all_pieces(Color::White),
-            Color::Black => &self.piece_locations.all_pieces(Color::Black),
+            Color::White => self.piece_locations.all_pieces(Color::White),
+            Color::Black => self.piece_locations.all_pieces(Color::Black),
         }
     }
 
@@ -967,8 +979,8 @@ impl Board {
         return checks_and_pins;
     }
 
-    fn get_check_for_path(&self, king_square: &u8, king_color: Color, path: &FnvIndexSet<u8>) -> Option<Check> {
-        let mut checking_path: FnvIndexSet<u8> = Default::default();
+    fn get_check_for_path(&self, king_square: &u8, king_color: Color, path: &FxIndexSet<u8>) -> Option<Check> {
+        let mut checking_path: FxIndexSet<u8> = Default::default();
         for square in path {
             match self.piece_locations.piece_at(square) {
                 Some(p) if p.color != king_color => {
@@ -986,9 +998,9 @@ impl Board {
         return None
     }
 
-    fn get_check_or_pin_for_path(&self, king_square: &u8, king_color: Color, path: &FnvIndexSet<u8>) -> Option<CheckOrPin> {
+    fn get_check_or_pin_for_path(&self, king_square: &u8, king_color: Color, path: &FxIndexSet<u8>) -> Option<CheckOrPin> {
         let mut pinned_piece: Option<u8> = None;
-        let mut current_path: FnvIndexSet<u8> = Default::default();
+        let mut current_path: FxIndexSet<u8> = Default::default();
         for square in path {
             match self.piece_locations.piece_at(square) {
                 Some(p) if p.color != king_color => {

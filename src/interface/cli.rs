@@ -10,20 +10,28 @@ use super::arguments::{ArgumentParser, Arguments};
 fn build_argument_parser() -> ArgumentParser {
     let mut builder = ArgumentParser::builder();
     builder.add_subcommand("new").unwrap()
-        .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap()
         .add_named_arg("from_fen", HashSet::from(["--from-fen"]), false, false).unwrap()
         .add_flag_arg("no_confirm", HashSet::from(["--no-confirm"])).unwrap();
+
     builder.add_subcommand("list").unwrap()
         .add_positional_arg("type", true, false).unwrap();
+
     builder.add_subcommand("suggest").unwrap()
         .add_positional_arg("count", false, false).unwrap();
+
     builder.add_subcommand("perft").unwrap()
         .add_named_arg("depth", HashSet::from(["--engine-depth"]), true, false).unwrap();
+
     builder.add_subcommand("move").unwrap();
+
     builder.add_subcommand("serialize").unwrap()
         .add_positional_arg("type", true, false).unwrap();
+
     builder.add_subcommand("board").unwrap()
         .add_flag_arg("as_fen", HashSet::from(["--as-fen"])).unwrap();
+
+    builder.add_subcommand("search").unwrap()
+        .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap();
     return builder.build();
 }
 
@@ -45,7 +53,7 @@ impl Interface {
         
         return Interface {
             shell: InteractiveShell::new(Some(prompt), build_argument_parser()),
-            game: Game::new(1),
+            game: Game::new(),
             confirmations: HashSet::from([String::from("y"), String::from("yes")]),
         }
     }
@@ -64,6 +72,7 @@ impl Interface {
                         "list"          => self.do_list(*s.args),
                         "move"          => self.do_move(*s.args),
                         "perft"         => self.do_perft(*s.args),
+                        "search"        => self.do_search(*s.args),
                         "suggest"       => self.do_suggest(*s.args),
                         "serialize"     => self.do_serialize(*s.args),
                         "board"         => self.do_board(*s.args),
@@ -94,13 +103,9 @@ impl Interface {
                     confirmed = self.confirmations.contains(&confirm.to_lowercase());
                 }
                 if confirmed {
-                    let depth: u8 = match a.get_arg("depth") {
-                        Some(d) => d.parse().unwrap(),
-                        None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
-                    };
                     match a.get_arg("from_fen") {
-                        Some(fen) => self.game = Game::from_fen(&fen, depth),
-                        None => self.game = Game::new(depth)
+                        Some(fen) => self.game = Game::from_fen(&fen),
+                        None => self.game = Game::new()
                     }
                     self.shell.output("New game started!");
                 } else {
@@ -189,8 +194,14 @@ impl Interface {
                 match a.get_arg("depth") {
                     Some(arg) => {
                         let depth: u8 = arg.parse().unwrap();
-                        let table = Table::new(self.game.do_perft(depth).get_analysis()).with(Style::pseudo_clean());
-                        self.shell.output(&table.to_string())
+                        let result = self.game.do_perft(depth);
+                        let table = Table::new(result.get_analysis()).with(Style::pseudo_clean());
+                        self.shell.output(&table.to_string());
+                        self.shell.output(&format!("Completed in {:?}", result.duration));
+                        self.shell.empty_line();
+                        self.shell.output(&format!("Starting Zobrist ID: {}", result.zobrist_start));
+                        self.shell.output(&format!("Ending Zobrist ID:   {}", result.zobrist_end));
+
                     },
                     None => self.shell.output("Missing required field: 'depth' (use '--engine-depth')")
                 }
@@ -216,6 +227,21 @@ impl Interface {
                         })
                     }
                 }
+            }
+        }
+    }
+
+    fn do_search(&mut self, args: ParsedArgs) {
+        match args {
+            ParsedArgs::SubCommand(_s) => panic!("Subcommand 'search' should not have its own subcommands"),
+            ParsedArgs::Arguments(a) => {
+                let depth: u8 = match a.get_arg("depth") {
+                    Some(d) => d.parse().unwrap(),
+                    None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
+                };
+                self.shell.output("Searching...");
+                self.game.search(depth);
+                self.shell.output("Search complete!");
             }
         }
     }
