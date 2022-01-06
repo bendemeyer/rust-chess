@@ -1,11 +1,137 @@
-use fnv::FnvHashSet;
+use fxhash::FxHashSet;
 
 use crate::rules::Color;
-use crate::util::{ControlFlow, FnvIndexSet, FoldHelper, UnwrapsAll};
+use crate::util::{ControlFlow, FxIndexSet, FoldHelper, UnwrapsAll};
 
-use crate::rules::board::squares::BoardSquare;
+use crate::rules::board::squares::{BoardSquare, ROW_2, ROW_7};
 
 use super::{PieceType, Piece};
+
+
+#[derive(Clone, Copy)]
+pub enum SlideDirection {
+    North,
+    NorthEast,
+    East,
+    SouthEast,
+    South,
+    SouthWest,
+    West,
+    NorthWest,
+}
+
+impl SlideDirection {
+    pub fn get_direction(&self) -> (i8, i8) {
+        return match self {
+            SlideDirection::North     => (0, 1),
+            SlideDirection::NorthEast => (1, 1),
+            SlideDirection::East      => (1, 0),
+            SlideDirection::SouthEast => (1, -1),
+            SlideDirection::South     => (0, -1),
+            SlideDirection::SouthWest => (-1, -1),
+            SlideDirection::West      => (-1, 0),
+            SlideDirection::NorthWest => (-1, 1),
+        }
+    }
+
+    pub fn get_hash_offset(&self) -> u16 {
+        return match self {
+            SlideDirection::North     => 0,
+            SlideDirection::NorthEast => 64,
+            SlideDirection::East      => 128,
+            SlideDirection::SouthEast => 192,
+            SlideDirection::South     => 256,
+            SlideDirection::SouthWest => 320,
+            SlideDirection::West      => 384,
+            SlideDirection::NorthWest => 448,
+        }
+    }
+
+    pub fn is_positive(&self) -> bool {
+        return match self {
+            SlideDirection::North     => true,
+            SlideDirection::NorthEast => true,
+            SlideDirection::East      => true,
+            SlideDirection::SouthEast => false,
+            SlideDirection::South     => false,
+            SlideDirection::SouthWest => false,
+            SlideDirection::West      => false,
+            SlideDirection::NorthWest => true,
+        }
+    }
+}
+
+
+#[derive(Clone, Copy)]
+pub enum PawnMovement {
+    WhiteAdvance,
+    WhiteAttack,
+    BlackAdvance,
+    BlackAttack,
+}
+
+impl PawnMovement {
+    pub fn get_movements(&self) -> Vec<(i8, i8)> {
+        return match self {
+            PawnMovement::WhiteAdvance => Vec::from([(0, 1)]),
+            PawnMovement::WhiteAttack  => Vec::from([(1, 1), (-1, 1)]),
+            PawnMovement::BlackAdvance => Vec::from([(0, -1)]),
+            PawnMovement::BlackAttack  => Vec::from([(1, -1), (-1, -1)]),
+        }
+    }
+
+    pub fn get_hash_offset(&self) -> u8 {
+        return match self {
+            PawnMovement::WhiteAdvance => 0,
+            PawnMovement::WhiteAttack  => 64,
+            PawnMovement::BlackAdvance => 128,
+            PawnMovement::BlackAttack  => 192,
+        }
+    }
+
+    pub fn get_max_distance(&self, square: u8) -> u8 {
+        return match self {
+            PawnMovement::WhiteAdvance => if ROW_2.contains(&square) { 2u8 } else { 1u8 },
+            PawnMovement::WhiteAttack  => 1u8,
+            PawnMovement::BlackAdvance => if ROW_7.contains(&square) { 2u8 } else { 1u8 },
+            PawnMovement::BlackAttack  => 1u8,
+        }
+    }
+
+    pub fn is_positive(&self) -> bool {
+        return match self {
+            PawnMovement::WhiteAdvance => true,
+            PawnMovement::WhiteAttack  => true,
+            PawnMovement::BlackAdvance => false,
+            PawnMovement::BlackAttack  => false,
+        }
+    }
+}
+
+
+pub fn get_sliding_bitboard(square: u8, direction: SlideDirection) -> u64 {
+    let (col_shift, row_shift) = direction.get_direction();
+    let mut active_bits: FxHashSet<u8> = Default::default();
+    let mut current_square = square;
+    loop {
+        match BoardSquare::from_value(current_square).apply_movement(col_shift, row_shift) {
+            Err(_) => break,
+            Ok(new_square) => {
+                active_bits.insert(new_square.value());
+                current_square = new_square.value();
+            },
+        }
+    }
+    let bit_string = (0u8..=63u8).fold(String::new(), |mut bits, bit| {
+        if active_bits.contains(&bit) {
+            bits.push('1')
+        } else {
+            bits.push('0')
+        }
+        bits
+    });
+    return u64::from_str_radix(&bit_string, 2).unwrap();
+}
 
 
 fn get_squares_for_vector(square: u8, vector: &MovementVector) -> Vec<u8> {
@@ -19,11 +145,11 @@ fn get_squares_for_vector(square: u8, vector: &MovementVector) -> Vec<u8> {
     }).unwrap_all().get_result();
 }
 
-fn build_static_vector(square: u8, vector: &MovementVector) -> FnvIndexSet<u8> {
-    return FnvIndexSet::from_iter(get_squares_for_vector(square, vector).into_iter());
+fn build_static_vector(square: u8, vector: &MovementVector) -> FxIndexSet<u8> {
+    return FxIndexSet::from_iter(get_squares_for_vector(square, vector).into_iter());
 }
 
-fn collect_static_vectors(square: u8, vectors: &Vec<&MovementVector>) -> Vec<FnvIndexSet<u8>> {
+fn collect_static_vectors(square: u8, vectors: &Vec<&MovementVector>) -> Vec<FxIndexSet<u8>> {
     return vectors.iter().map(|vector| build_static_vector(square, vector)).collect();
 }
 
@@ -70,8 +196,8 @@ pub struct MovementVector {
 
 
 pub trait Movement {
-    fn movement_rays(&self) -> &Vec<FnvIndexSet<u8>>;
-    fn attacked_squares(&self) -> &FnvHashSet<u8>;
+    fn movement_rays(&self) -> &Vec<FxIndexSet<u8>>;
+    fn attacked_squares(&self) -> &FxHashSet<u8>;
     fn can_move(&self, square: &u8) -> bool;
     fn can_capture(&self, square: &u8) -> bool;
 }
@@ -82,13 +208,13 @@ pub enum MovementDetail {
 }
 
 impl Movement for MovementDetail {
-    fn movement_rays(&self) -> &Vec<FnvIndexSet<u8>> {
+    fn movement_rays(&self) -> &Vec<FxIndexSet<u8>> {
         match self {
             &MovementDetail::Piece(m) => &m.rays,
             &MovementDetail::Pawn(m) => &m.all_rays,
         }
     }
-    fn attacked_squares(&self) -> &FnvHashSet<u8> {
+    fn attacked_squares(&self) -> &FxHashSet<u8> {
         match self {
             &MovementDetail::Piece(m) => &m.all_squares,
             &MovementDetail::Pawn(m) => &m.attacking_squares,
@@ -111,12 +237,12 @@ impl Movement for MovementDetail {
 
 #[derive(Clone)]
 pub struct PieceMovementDetail {
-    pub rays: Vec<FnvIndexSet<u8>>,
-    pub all_squares: FnvHashSet<u8>,
+    pub rays: Vec<FxIndexSet<u8>>,
+    pub all_squares: FxHashSet<u8>,
 }
 
 impl PieceMovementDetail {
-    pub fn from_static_vectors(vectors: Vec<FnvIndexSet<u8>>) -> PieceMovementDetail {
+    pub fn from_static_vectors(vectors: Vec<FxIndexSet<u8>>) -> PieceMovementDetail {
         PieceMovementDetail {
             rays: vectors.clone(),
             all_squares: vectors.clone().into_iter().flatten().collect(),
@@ -126,15 +252,15 @@ impl PieceMovementDetail {
 
 #[derive(Clone, Default)]
 pub struct PawnMovementDetail {
-    pub advancing_rays: Vec<FnvIndexSet<u8>>,
-    pub attacking_rays: Vec<FnvIndexSet<u8>>,
-    all_rays: Vec<FnvIndexSet<u8>>,
-    pub advancing_squares: FnvHashSet<u8>,
-    pub attacking_squares: FnvHashSet<u8>,
+    pub advancing_rays: Vec<FxIndexSet<u8>>,
+    pub attacking_rays: Vec<FxIndexSet<u8>>,
+    all_rays: Vec<FxIndexSet<u8>>,
+    pub advancing_squares: FxHashSet<u8>,
+    pub attacking_squares: FxHashSet<u8>,
 }
 
 impl PawnMovementDetail {
-    pub fn from_rays(adv: Vec<FnvIndexSet<u8>>, att: Vec<FnvIndexSet<u8>>) -> PawnMovementDetail {
+    pub fn from_rays(adv: Vec<FxIndexSet<u8>>, att: Vec<FxIndexSet<u8>>) -> PawnMovementDetail {
         return PawnMovementDetail {
             advancing_rays: adv.clone(),
             attacking_rays: att.clone(),

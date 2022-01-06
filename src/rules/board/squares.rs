@@ -1,4 +1,4 @@
-use crate::util::FnvIndexSet;
+use crate::util::FxIndexSet;
 use crate::util::errors::ValueError;
 
 
@@ -31,14 +31,14 @@ pub enum BoardDiagonal {
 
 
 lazy_static! {
-    pub static ref ROW_1: FnvIndexSet<u8> = [  0u8,  1u8,  2u8,  3u8,  4u8,  5u8,  6u8,  7u8 ].into_iter().collect();
-    pub static ref ROW_2: FnvIndexSet<u8> = [  8u8,  9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8 ].into_iter().collect();
-    pub static ref ROW_3: FnvIndexSet<u8> = [ 16u8, 17u8, 18u8, 19u8, 20u8, 21u8, 22u8, 23u8 ].into_iter().collect();
-    pub static ref ROW_4: FnvIndexSet<u8> = [ 24u8, 25u8, 26u8, 27u8, 28u8, 29u8, 30u8, 31u8 ].into_iter().collect();
-    pub static ref ROW_5: FnvIndexSet<u8> = [ 32u8, 33u8, 34u8, 35u8, 36u8, 37u8, 38u8, 39u8 ].into_iter().collect();
-    pub static ref ROW_6: FnvIndexSet<u8> = [ 40u8, 41u8, 42u8, 43u8, 44u8, 45u8, 46u8, 47u8 ].into_iter().collect();
-    pub static ref ROW_7: FnvIndexSet<u8> = [ 48u8, 49u8, 50u8, 51u8, 52u8, 53u8, 54u8, 55u8 ].into_iter().collect();
-    pub static ref ROW_8: FnvIndexSet<u8> = [ 56u8, 57u8, 58u8, 59u8, 60u8, 61u8, 62u8, 63u8 ].into_iter().collect();
+    pub static ref ROW_1: FxIndexSet<u8> = [  0u8,  1u8,  2u8,  3u8,  4u8,  5u8,  6u8,  7u8 ].into_iter().collect();
+    pub static ref ROW_2: FxIndexSet<u8> = [  8u8,  9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8 ].into_iter().collect();
+    pub static ref ROW_3: FxIndexSet<u8> = [ 16u8, 17u8, 18u8, 19u8, 20u8, 21u8, 22u8, 23u8 ].into_iter().collect();
+    pub static ref ROW_4: FxIndexSet<u8> = [ 24u8, 25u8, 26u8, 27u8, 28u8, 29u8, 30u8, 31u8 ].into_iter().collect();
+    pub static ref ROW_5: FxIndexSet<u8> = [ 32u8, 33u8, 34u8, 35u8, 36u8, 37u8, 38u8, 39u8 ].into_iter().collect();
+    pub static ref ROW_6: FxIndexSet<u8> = [ 40u8, 41u8, 42u8, 43u8, 44u8, 45u8, 46u8, 47u8 ].into_iter().collect();
+    pub static ref ROW_7: FxIndexSet<u8> = [ 48u8, 49u8, 50u8, 51u8, 52u8, 53u8, 54u8, 55u8 ].into_iter().collect();
+    pub static ref ROW_8: FxIndexSet<u8> = [ 56u8, 57u8, 58u8, 59u8, 60u8, 61u8, 62u8, 63u8 ].into_iter().collect();
 }
 
 

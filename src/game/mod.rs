@@ -1,3 +1,5 @@
+use std::{collections::BTreeMap, time::{Instant, Duration}};
+
 use tabled::Tabled;
 
 use crate::{engine::Engine, rules::{Color, pieces::{Piece, movement::Move}, board::Board}};
@@ -16,6 +18,11 @@ enum PerftType {
 #[derive(Default)]
 pub struct Perft {
     levels: Vec<LevelPerft>,
+    pub cache_hits: u32,
+    pub zobrist_start: u64,
+    pub zobrist_end: u64,
+    start: Option<Instant>,
+    pub duration: Duration,
 }
 
 impl Perft {
@@ -61,6 +68,17 @@ impl Perft {
     pub fn get_analysis(&self) -> Vec<&LevelPerft> {
         return self.levels.iter().collect();
     }
+
+    pub fn start(&mut self) {
+        self.start = Some(Instant::now());
+    }
+
+    pub fn complete(&mut self) {
+        match self.start {
+            Some(i) => self.duration = i.elapsed(),
+            None => ()
+        }
+    }
 }
 
 
@@ -77,43 +95,47 @@ pub struct LevelPerft {
 
 pub struct Game {
     board: Board,
-    engine: Engine,
     move_history: Vec<Move>,
-    engine_depth: u8,
+    suggestions: BTreeMap<i16, Move>,
 }
 
 impl Game {
-    pub fn new(engine_depth: u8) -> Self {
-        return Self::from_board(Board::from_starting_position(), engine_depth);
+    pub fn new() -> Self {
+        return Self::from_board(Board::from_starting_position());
     }
 
-    pub fn from_fen(fen: &str, engine_depth: u8) -> Self {
-        return Self::from_board(Board::from_fen(fen), engine_depth);
+    pub fn from_fen(fen: &str) -> Self {
+        return Self::from_board(Board::from_fen(fen));
     }
 
-    fn from_board(board: Board, engine_depth: u8) -> Self {
-        let engine = Engine::new(board.clone(), engine_depth);
+    fn from_board(board: Board) -> Self {
         return Self {
             board: board,
-            engine: engine,
             move_history: Vec::new(),
-            engine_depth: engine_depth,
+            suggestions: Default::default(),
         }
     }
 
+    pub fn search(&mut self, depth: u8) {
+        self.suggestions = Engine::do_search(self.board.clone(), depth);
+    }
+
     pub fn suggest_move(&self) -> &Move {
-        return self.engine.suggest();
+        return match self.board.state.get_move_color() {
+            Color::White => self.suggestions.iter().next_back().unwrap().1,
+            Color::Black => self.suggestions.iter().next().unwrap().1,
+        }
     }
 
     pub fn make_move(&mut self, new_move: &Move) {
         self.board.make_move(new_move);
         self.move_history.push(*new_move);
-        self.engine = Engine::new(self.board.clone(), self.engine_depth);
+        self.suggestions = Default::default()
     }
 
     pub fn do_perft(&mut self, depth: u8) -> Perft {
         let mut perft: Perft = Default::default();
-        self.engine.do_perft(depth, &mut perft);
+        Engine::do_perft(self.board.clone(), depth, &mut perft);
         return perft;
     }
 

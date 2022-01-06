@@ -4,11 +4,11 @@ pub mod zobrist;
 
 pub use std::ops::ControlFlow;
 
-use fnv::FnvBuildHasher;
+use fxhash::FxBuildHasher;
 use indexmap::{IndexMap, IndexSet};
 
-pub type FnvIndexMap<K, V> = IndexMap<K, V, FnvBuildHasher>;
-pub type FnvIndexSet<T> = IndexSet<T, FnvBuildHasher>;
+pub type FxIndexMap<K, V> = IndexMap<K, V, FxBuildHasher>;
+pub type FxIndexSet<T> = IndexSet<T, FxBuildHasher>;
 
 
 pub trait UnwrapsAll<T> {
