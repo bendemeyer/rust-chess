@@ -1,6 +1,6 @@
 use std::{hash::{Hasher, BuildHasher}, collections::HashMap};
 
-use crate::rules::{pieces::{PieceType, movement::{CastleType, Move, HasMove}}, board::CastleRight, Color};
+use crate::rules::{pieces::{PieceType, movement::{CastleType, Move}}, Color, board::state::CastleRight};
 
 
 pub type ZobristHashMap<T> = HashMap<u64, T, BuildZobristHasher>;

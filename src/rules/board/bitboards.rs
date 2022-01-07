@@ -7,25 +7,57 @@ use super::squares::BoardSquare;
 
 lazy_static! {
     static ref RAY_BITBOARDS: FxHashMap<u16, u64> = prepare_ray_bitboards();
+    static ref DIAGONAL_BITBOARDS: FxHashMap<u8, u64> = prepare_diagonal_bitboards();
+    static ref ORTHAGONAL_BITBOARDS: FxHashMap<u8, u64> = prepare_orthagonal_bitboards();
+
     static ref KNIGHT_BITBOARDS: FxHashMap<u8, u64> = prepare_knight_bitboards();
     static ref PAWN_BITBOARDS: FxHashMap<u8, u64> = prepare_pawn_bitboards();
     static ref KING_BITBOARDS: FxHashMap<u8, u64> = prepare_king_bitboards();
+}
 
-    static ref BISHOP_DIRS: Vec<SlideDirection> = Vec::from([
-        SlideDirection::NorthEast, SlideDirection::SouthEast, SlideDirection::SouthWest, SlideDirection::NorthWest
-    ]);
-    static ref ROOK_DIRS: Vec<SlideDirection> = Vec::from([
-        SlideDirection::North, SlideDirection::East, SlideDirection::South, SlideDirection::West
-    ]);
-    static ref QUEEN_DIRS: Vec<SlideDirection> = Vec::from([
-        SlideDirection::NorthEast, SlideDirection::SouthEast, SlideDirection::SouthWest, SlideDirection::NorthWest,
-        SlideDirection::North, SlideDirection::East, SlideDirection::South, SlideDirection::West
-    ]);
+
+pub struct BitboardSquares {
+    board: u64,
+}
+
+impl BitboardSquares {
+    pub fn from_board(board: u64) -> Self {
+        return Self { board: board }
+    }
+
+    fn unset_square(&mut self, square: u8) {
+        self.board = unset_bit_at_square(self.board, square)
+    }
+}
+
+impl Iterator for BitboardSquares {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.board {
+            0 => None,
+            _ => {
+                let square = self.board.trailing_zeros() as u8;
+                self.unset_square(square);
+                Some(square)
+            }
+        }
+    }
 }
 
 
 pub fn get_bit_for_square(square: u8) -> u64 {
     return 2u64.pow(square as u32)
+}
+
+
+pub fn set_bit_at_square(board: u64, square: u8) -> u64 {
+    return board | 2u64.pow(square as u32)
+}
+
+
+pub fn unset_bit_at_square(board: u64, square: u8) -> u64 {
+    return board & !(2u64.pow(square as u32))
 }
 
 
@@ -52,21 +84,30 @@ fn get_slide_direction_key(square: u8, dir: SlideDirection) -> u16 {
 
 
 fn prepare_ray_bitboards() -> FxHashMap<u16, u64> {
-    [
-        SlideDirection::North,
-        SlideDirection::NorthEast,
-        SlideDirection::East,
-        SlideDirection::SouthEast,
-        SlideDirection::South,
-        SlideDirection::SouthWest,
-        SlideDirection::West,
-        SlideDirection::NorthWest,
-    ].iter().fold(Default::default(),|mut map, dir| {
+    SlideDirection::all_directions().iter().fold(Default::default(),|mut map, dir| {
         (0u8..=63u8).for_each(|s| {
             map.insert(get_slide_direction_key(s, *dir), generate_sliding_bitboard(s, *dir));
         });
         map
     })
+}
+
+
+fn prepare_diagonal_bitboards() -> FxHashMap<u8, u64> {
+    (0u8..=63u8).map(|s| {
+        (s, SlideDirection::diagonals().into_iter().fold(0u64, |board, dir| {
+            board | generate_sliding_bitboard(s, dir)
+        }))
+    }).collect()
+}
+
+
+fn prepare_orthagonal_bitboards() -> FxHashMap<u8, u64> {
+    (0u8..=63u8).map(|s| {
+        (s, SlideDirection::orthagonals().into_iter().fold(0u64, |board, dir| {
+            board | generate_sliding_bitboard(s, dir)
+        }))
+    }).collect()
 }
 
 
@@ -165,23 +206,31 @@ fn prepare_king_bitboards() -> FxHashMap<u8, u64> {
 }
 
 
-fn get_ray_bitboard(square: u8, dir: SlideDirection) -> u64 {
+pub fn get_ray_bitboard(square: u8, dir: SlideDirection) -> u64 {
     return *RAY_BITBOARDS.get(&get_slide_direction_key(square, dir)).unwrap();
 }
 
-fn get_pawn_bitboard(square: u8, mov: PawnMovement) -> u64 {
+pub fn get_diagonal_bitboard(square: u8) -> u64 {
+    return *DIAGONAL_BITBOARDS.get(&square).unwrap();
+}
+
+pub fn get_orthagonal_bitboard(square: u8) -> u64 {
+    return *ORTHAGONAL_BITBOARDS.get(&square).unwrap();
+}
+
+pub fn get_pawn_bitboard(square: u8, mov: PawnMovement) -> u64 {
     return *PAWN_BITBOARDS.get(&get_pawn_movement_key(square, mov)).unwrap();
 }
 
-fn get_knight_bitboard(square: u8) -> u64 {
+pub fn get_knight_bitboard(square: u8) -> u64 {
     return *KNIGHT_BITBOARDS.get(&square).unwrap();
 }
 
-fn get_king_bitboard(square: u8) -> u64 {
+pub fn get_king_bitboard(square: u8) -> u64 {
     return *KING_BITBOARDS.get(&square).unwrap();
 }
 
-fn get_bitboard_for_slide_direction(square: u8, friendlies: u64, enemies: u64, dir: SlideDirection) -> u64 {
+fn get_moves_for_slide_direction(square: u8, friendlies: u64, enemies: u64, dir: SlideDirection) -> u64 {
     let all_blockers = friendlies | enemies;
     let ray = get_ray_bitboard(square, dir);
     let blocks = ray & all_blockers;
@@ -202,20 +251,20 @@ fn get_bitboard_for_slide_direction(square: u8, friendlies: u64, enemies: u64, d
 }
 
 
-fn get_bitboard_for_slide_directions<'a, I>(square: u8, friendlies: u64, enemies: u64, dirs: I) ->u64 where I: Iterator<Item=&'a SlideDirection> {
+fn get_moves_for_slide_directions<'a, I>(square: u8, friendlies: u64, enemies: u64, dirs: I) ->u64 where I: Iterator<Item=&'a SlideDirection> {
     return dirs.fold(0u64, |mut board, dir| {
-        board |= get_bitboard_for_slide_direction(square, friendlies, enemies, *dir);
+        board |= get_moves_for_slide_direction(square, friendlies, enemies, *dir);
         board
     })    
 }
 
 
-fn get_bitboard_for_pawn_attacks(square: u8, enemies: u64, mov: PawnMovement, en_passant_target: u64) -> u64 {
+fn get_moves_for_pawn_attacks(square: u8, enemies: u64, mov: PawnMovement, en_passant_target: u64) -> u64 {
     return get_pawn_bitboard(square, mov) & (enemies | en_passant_target);
 }
 
 
-fn get_bitboard_for_pawn_advance(square: u8, friendlies: u64, enemies: u64, mov: PawnMovement) -> u64 {
+fn get_moves_for_pawn_advance(square: u8, friendlies: u64, enemies: u64, mov: PawnMovement) -> u64 {
     let all_blockers = friendlies | enemies;
     let moves = get_pawn_bitboard(square, mov);
     let blocks = moves & all_blockers;
@@ -231,40 +280,30 @@ fn get_bitboard_for_pawn_advance(square: u8, friendlies: u64, enemies: u64, mov:
 }
 
 
-fn get_bitboard_for_pawn(square: u8, friendlies: u64, enemies: u64, color: Color, en_passant_target: u64) -> u64 {
+fn get_moves_for_pawn(square: u8, friendlies: u64, enemies: u64, color: Color, en_passant_target: u64) -> u64 {
     let advance = match color { Color::White => PawnMovement::WhiteAdvance, Color::Black => PawnMovement::BlackAdvance };
     let attack = match color { Color::White => PawnMovement::WhiteAttack, Color::Black => PawnMovement::BlackAttack };
-    return get_bitboard_for_pawn_attacks(square, enemies, attack, en_passant_target) | get_bitboard_for_pawn_advance(square, friendlies, enemies, advance);
+    return get_moves_for_pawn_attacks(square, enemies, attack, en_passant_target) | get_moves_for_pawn_advance(square, friendlies, enemies, advance);
 }
 
 
-fn get_bitboard_for_knight(square: u8, friendlies: u64) -> u64 {
+fn get_moves_for_knight(square: u8, friendlies: u64) -> u64 {
     return get_knight_bitboard(square) ^ friendlies
 }
 
 
-fn get_bitboard_for_king(square: u8, friendlies: u64) -> u64 {
+fn get_moves_for_king(square: u8, friendlies: u64) -> u64 {
     return get_king_bitboard(square) ^ friendlies
 }
 
 
-pub fn set_bit_at_square(board: u64, square: u8) -> u64 {
-    return board | 2u64.pow(square as u32)
-}
-
-
-pub fn unset_bit_at_square(board: u64, square: u8) -> u64 {
-    return board & !(2u64.pow(square as u32))
-}
-
-
-pub fn get_moves_bitboard_for_piece(square: u8, piece: Piece, friendlies: u64, enemies: u64, en_passant_target: u64) -> u64 {
+pub fn get_moves_for_piece(square: u8, piece: &Piece, friendlies: u64, enemies: u64, en_passant_target: u64) -> u64 {
     match piece.piece_type {
-        PieceType::Pawn   => get_bitboard_for_pawn(square, friendlies, enemies, piece.color, en_passant_target),
-        PieceType::Knight => get_bitboard_for_knight(square, friendlies),
-        PieceType::Bishop => get_bitboard_for_slide_directions(square, friendlies, enemies, BISHOP_DIRS.iter()),
-        PieceType::Rook   => get_bitboard_for_slide_directions(square, friendlies, enemies, ROOK_DIRS.iter()),
-        PieceType::Queen  => get_bitboard_for_slide_directions(square, friendlies, enemies, QUEEN_DIRS.iter()),
-        PieceType::King   => get_bitboard_for_king(square, friendlies),
+        PieceType::Pawn   => get_moves_for_pawn(square, friendlies, enemies, piece.color, en_passant_target),
+        PieceType::Knight => get_moves_for_knight(square, friendlies),
+        PieceType::Bishop => get_moves_for_slide_directions(square, friendlies, enemies, SlideDirection::diagonals().iter()),
+        PieceType::Rook   => get_moves_for_slide_directions(square, friendlies, enemies, SlideDirection::orthagonals().iter()),
+        PieceType::Queen  => get_moves_for_slide_directions(square, friendlies, enemies, SlideDirection::all_directions().iter()),
+        PieceType::King   => get_moves_for_king(square, friendlies),
     }
 }

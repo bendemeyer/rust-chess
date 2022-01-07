@@ -1,3 +1,4 @@
+use crate::rules::Color;
 use crate::util::FxIndexSet;
 use crate::util::errors::ValueError;
 
@@ -77,6 +78,27 @@ pub fn get_square_from_col_and_row(col: u8, row: u8) -> u8 {
 pub fn get_col_and_row_from_square(square: u8) -> [u8; 2] {
     if square > 63 { panic!("Invalid square supplied") }
     return [ square % 8, square / 8 ]
+}
+
+pub fn is_second_rank(square: u8, color: Color) -> bool {
+    match color {
+        Color::White => get_col_and_row_from_square(square)[1] == 1,
+        Color::Black => get_col_and_row_from_square(square)[1] == 6,
+    }
+}
+
+pub fn is_fourth_rank(square: u8, color: Color) -> bool {
+    match color {
+        Color::White => get_col_and_row_from_square(square)[1] == 3,
+        Color::Black => get_col_and_row_from_square(square)[1] == 4,
+    }
+}
+
+pub fn is_eighth_rank(square: u8, color: Color) -> bool {
+    match color {
+        Color::White => get_col_and_row_from_square(square)[1] == 7,
+        Color::Black => get_col_and_row_from_square(square)[1] == 0,
+    }
 }
 
 fn map_col_to_name(col: u8) -> char {

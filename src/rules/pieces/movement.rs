@@ -1,9 +1,6 @@
-use fxhash::FxHashSet;
-
 use crate::rules::Color;
-use crate::util::{ControlFlow, FxIndexSet, FoldHelper, UnwrapsAll};
 
-use crate::rules::board::squares::{BoardSquare, ROW_2, ROW_7};
+use crate::rules::board::squares::is_second_rank;
 
 use super::{PieceType, Piece};
 
@@ -21,6 +18,37 @@ pub enum SlideDirection {
 }
 
 impl SlideDirection {
+    pub fn diagonals() -> [SlideDirection; 4] {
+        [
+            SlideDirection::NorthEast,
+            SlideDirection::SouthEast,
+            SlideDirection::SouthWest,
+            SlideDirection::NorthWest,
+        ]
+    }
+
+    pub fn orthagonals() -> [SlideDirection; 4] {
+        [
+            SlideDirection::North,
+            SlideDirection::East,
+            SlideDirection::South,
+            SlideDirection::West,
+        ]
+    }
+
+    pub fn all_directions() -> [SlideDirection; 8] {
+        [
+            SlideDirection::North,
+            SlideDirection::NorthEast,
+            SlideDirection::East,
+            SlideDirection::SouthEast,
+            SlideDirection::South,
+            SlideDirection::SouthWest,
+            SlideDirection::West,
+            SlideDirection::NorthWest,
+        ]
+    }
+
     pub fn get_direction(&self) -> (i8, i8) {
         return match self {
             SlideDirection::North     => (0, 1),
@@ -36,14 +64,14 @@ impl SlideDirection {
 
     pub fn get_hash_offset(&self) -> u16 {
         return match self {
-            SlideDirection::North     => 0,
-            SlideDirection::NorthEast => 64,
-            SlideDirection::East      => 128,
-            SlideDirection::SouthEast => 192,
-            SlideDirection::South     => 256,
-            SlideDirection::SouthWest => 320,
-            SlideDirection::West      => 384,
-            SlideDirection::NorthWest => 448,
+            SlideDirection::North     => 64 * 0,
+            SlideDirection::NorthEast => 64 * 1,
+            SlideDirection::East      => 64 * 2,
+            SlideDirection::SouthEast => 64 * 3,
+            SlideDirection::South     => 64 * 4,
+            SlideDirection::SouthWest => 64 * 5,
+            SlideDirection::West      => 64 * 6,
+            SlideDirection::NorthWest => 64 * 7,
         }
     }
 
@@ -82,18 +110,18 @@ impl PawnMovement {
 
     pub fn get_hash_offset(&self) -> u8 {
         return match self {
-            PawnMovement::WhiteAdvance => 0,
-            PawnMovement::WhiteAttack  => 64,
-            PawnMovement::BlackAdvance => 128,
-            PawnMovement::BlackAttack  => 192,
+            PawnMovement::WhiteAdvance => 64 * 0,
+            PawnMovement::WhiteAttack  => 64 * 1,
+            PawnMovement::BlackAdvance => 64 * 2,
+            PawnMovement::BlackAttack  => 64 * 3,
         }
     }
 
     pub fn get_max_distance(&self, square: u8) -> u8 {
         return match self {
-            PawnMovement::WhiteAdvance => if ROW_2.contains(&square) { 2u8 } else { 1u8 },
+            PawnMovement::WhiteAdvance => if is_second_rank(square, Color::White) { 2u8 } else { 1u8 },
             PawnMovement::WhiteAttack  => 1u8,
-            PawnMovement::BlackAdvance => if ROW_7.contains(&square) { 2u8 } else { 1u8 },
+            PawnMovement::BlackAdvance => if is_second_rank(square, Color::Black) { 2u8 } else { 1u8 },
             PawnMovement::BlackAttack  => 1u8,
         }
     }
@@ -106,62 +134,6 @@ impl PawnMovement {
             PawnMovement::BlackAttack  => false,
         }
     }
-}
-
-
-pub fn get_sliding_bitboard(square: u8, direction: SlideDirection) -> u64 {
-    let (col_shift, row_shift) = direction.get_direction();
-    let mut active_bits: FxHashSet<u8> = Default::default();
-    let mut current_square = square;
-    loop {
-        match BoardSquare::from_value(current_square).apply_movement(col_shift, row_shift) {
-            Err(_) => break,
-            Ok(new_square) => {
-                active_bits.insert(new_square.value());
-                current_square = new_square.value();
-            },
-        }
-    }
-    let bit_string = (0u8..=63u8).fold(String::new(), |mut bits, bit| {
-        if active_bits.contains(&bit) {
-            bits.push('1')
-        } else {
-            bits.push('0')
-        }
-        bits
-    });
-    return u64::from_str_radix(&bit_string, 2).unwrap();
-}
-
-
-fn get_squares_for_vector(square: u8, vector: &MovementVector) -> Vec<u8> {
-    return (0u8..vector.max_dist).try_fold(FoldHelper::init(Vec::new(), square), |fh, _| {
-        match BoardSquare::from_value(fh.data).apply_movement(vector.col_shift, vector.row_shift) {
-            Err(_) => ControlFlow::Break(fh),
-            Ok(new_square) => {
-                ControlFlow::Continue(FoldHelper::init([fh.accumulator, Vec::from([new_square.value()])].concat(), new_square.value()))
-            }
-        }
-    }).unwrap_all().get_result();
-}
-
-fn build_static_vector(square: u8, vector: &MovementVector) -> FxIndexSet<u8> {
-    return FxIndexSet::from_iter(get_squares_for_vector(square, vector).into_iter());
-}
-
-fn collect_static_vectors(square: u8, vectors: &Vec<&MovementVector>) -> Vec<FxIndexSet<u8>> {
-    return vectors.iter().map(|vector| build_static_vector(square, vector)).collect();
-}
-
-pub fn build_movement_detail(square: u8, vectors: &Vec<&MovementVector>) -> PieceMovementDetail {
-    return PieceMovementDetail::from_static_vectors(collect_static_vectors(square, vectors));
-}
-
-pub fn build_pawn_movement_detail(square: u8, adv_vecs: &Vec<&MovementVector>, att_vecs: &Vec<&MovementVector>) -> PawnMovementDetail {
-    return PawnMovementDetail::from_rays(
-        collect_static_vectors(square, adv_vecs),
-        collect_static_vectors(square, att_vecs),
-    );
 }
 
 
@@ -183,90 +155,6 @@ impl CastleType {
         return match self {
             &Self::Kingside => "kingside",
             &Self::Queenside => "queenside",
-        }
-    }
-}
-
-
-pub struct MovementVector {
-    pub col_shift: i8,
-    pub row_shift: i8,
-    pub max_dist: u8,
-}
-
-
-pub trait Movement {
-    fn movement_rays(&self) -> &Vec<FxIndexSet<u8>>;
-    fn attacked_squares(&self) -> &FxHashSet<u8>;
-    fn can_move(&self, square: &u8) -> bool;
-    fn can_capture(&self, square: &u8) -> bool;
-}
-
-pub enum MovementDetail {
-    Piece(&'static PieceMovementDetail),
-    Pawn(&'static PawnMovementDetail),
-}
-
-impl Movement for MovementDetail {
-    fn movement_rays(&self) -> &Vec<FxIndexSet<u8>> {
-        match self {
-            &MovementDetail::Piece(m) => &m.rays,
-            &MovementDetail::Pawn(m) => &m.all_rays,
-        }
-    }
-    fn attacked_squares(&self) -> &FxHashSet<u8> {
-        match self {
-            &MovementDetail::Piece(m) => &m.all_squares,
-            &MovementDetail::Pawn(m) => &m.attacking_squares,
-        }
-    }
-    fn can_move(&self, square: &u8) -> bool {
-        return match self {
-            &MovementDetail::Piece(m) => m.all_squares.contains(square),
-            &MovementDetail::Pawn(m) => m.advancing_squares.contains(square)
-        }
-    }
-    fn can_capture(&self, square: &u8) -> bool {
-        return match self {
-            &MovementDetail::Piece(m) => m.all_squares.contains(square),
-            &MovementDetail::Pawn(m) => m.attacking_squares.contains(square)
-        }
-    }
-    
-}
-
-#[derive(Clone)]
-pub struct PieceMovementDetail {
-    pub rays: Vec<FxIndexSet<u8>>,
-    pub all_squares: FxHashSet<u8>,
-}
-
-impl PieceMovementDetail {
-    pub fn from_static_vectors(vectors: Vec<FxIndexSet<u8>>) -> PieceMovementDetail {
-        PieceMovementDetail {
-            rays: vectors.clone(),
-            all_squares: vectors.clone().into_iter().flatten().collect(),
-        }
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct PawnMovementDetail {
-    pub advancing_rays: Vec<FxIndexSet<u8>>,
-    pub attacking_rays: Vec<FxIndexSet<u8>>,
-    all_rays: Vec<FxIndexSet<u8>>,
-    pub advancing_squares: FxHashSet<u8>,
-    pub attacking_squares: FxHashSet<u8>,
-}
-
-impl PawnMovementDetail {
-    pub fn from_rays(adv: Vec<FxIndexSet<u8>>, att: Vec<FxIndexSet<u8>>) -> PawnMovementDetail {
-        return PawnMovementDetail {
-            advancing_rays: adv.clone(),
-            attacking_rays: att.clone(),
-            all_rays: [adv.clone(), att.clone()].concat(),
-            advancing_squares: adv.clone().into_iter().flatten().collect(),
-            attacking_squares: att.clone().into_iter().flatten().collect(),
         }
     }
 }
@@ -299,12 +187,6 @@ impl Capture {
     }
 }
 
-pub trait HasMove {
-    fn get_piece_movements(&self) -> Vec<PieceMovement>;
-
-    fn get_capture(&self) -> Option<Capture>;
-}
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Move {
     NewGame(NewGame),
@@ -315,8 +197,8 @@ pub enum Move {
     EnPassant(EnPassant),
 }
 
-impl HasMove for Move {
-    fn get_piece_movements(&self) -> Vec<PieceMovement> {
+impl Move {
+    pub fn get_piece_movements(&self) -> Vec<PieceMovement> {
         match &self {
             &Move::NewGame(_m) => Vec::new(),
             &Move::BasicMove(m) => m.get_piece_movements(),
@@ -327,7 +209,7 @@ impl HasMove for Move {
         }
     }
 
-    fn get_capture(&self) -> Option<Capture> {
+    pub fn get_capture(&self) -> Option<Capture> {
         match &self {
             &Move::NewGame(_m) => None,
             &Move::BasicMove(m) => m.get_capture(),
@@ -335,6 +217,17 @@ impl HasMove for Move {
             &Move::Promotion(m) => m.basic_move.get_capture(),
             &Move::TwoSquarePawnMove(m) => m.basic_move.get_capture(),
             &Move::EnPassant(m) => m.get_capture(),
+        }
+    }
+
+    pub fn print_info(&self) {
+        match self {
+            Move::NewGame(_m) => println!("New Game"),
+            Move::BasicMove(m) => println!("Basic move: {} to {}", m.start, m.end),
+            Move::Castle(m) => println!("Castle: {} {}", match m.color { Color::White => "white", Color::Black => "black" }, match m.side { CastleType::Kingside => "kingside", CastleType::Queenside => "queenside" }),
+            Move::Promotion(m) => println!("Promotion: {} to {}, promote to {}", m.basic_move.start, m.basic_move.end, m.promote_to.value()),
+            Move::TwoSquarePawnMove(m) => println!("Two square pawn move: {} to {}", m.basic_move.start, m.basic_move.end),
+            Move::EnPassant(m) => println!("En passant: {} to {}", m.basic_move.start, m.basic_move.end),
         }
     }
 }
