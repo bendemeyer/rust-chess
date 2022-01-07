@@ -1,6 +1,6 @@
 use crate::rules::board::Board;
 
 
-pub fn evaluate_board(board: &Board) -> i16 {
+pub fn evaluate_board(_board: &Board) -> i16 {
     return 0;
 }

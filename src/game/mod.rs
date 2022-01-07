@@ -144,7 +144,7 @@ impl Game {
     }
 
     pub fn get_piece_at(&self, square: u8) -> Option<&Piece> {
-        return self.board.piece_locations.piece_at(&square);
+        return self.board.position.piece_at(&square);
     }
 
     pub fn get_current_turn(&self) -> Color {

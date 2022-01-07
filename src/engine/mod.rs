@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::{game::Perft, rules::{board::Board, pieces::movement::{Move, HasMove}, Color}, util::zobrist::ZobristHashMap};
+use crate::{game::Perft, rules::{board::Board, pieces::movement::Move, Color}, util::zobrist::ZobristHashMap};
 
 use self::evaluation::evaluate_board;
 
