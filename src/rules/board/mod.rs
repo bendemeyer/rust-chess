@@ -34,10 +34,8 @@ lazy_static! {
 }
 
 
-fn get_capture_square_for_en_passant(start: u8, end: u8) -> u8 {
-    let [_start_col, start_row] = get_col_and_row_from_square(start);
-    let [end_col, _end_row] = get_col_and_row_from_square(end);
-    return get_square_from_col_and_row(end_col, start_row)
+fn get_capture_square_for_ep_target(ep_target: u8) -> u8 {
+    return if ep_target > 31 { ep_target - 8 } else { ep_target + 8 };
 }
 
 fn get_en_passant_target_for_two_square_first_move(color: Color, square: u8) -> u8 {
@@ -216,6 +214,7 @@ impl Board {
     }
 
     pub fn make_move(&mut self, new_move: &Move) -> ReversibleBoardChange {
+        let last_fen = self.to_fen();
         let result = ReversibleBoardChange {
             move_made: *new_move,
             revoked_castle_rights: self.revoke_castle_rights(new_move),
@@ -234,6 +233,8 @@ impl Board {
         self.state.increment_halfmove_clock();
         match self.position.apply_move(new_move) {
             Err(e) => {
+                let _board = &self.position.piece_map;
+                println!("{}", last_fen);
                 new_move.print_info();
                 panic!("{}", e.msg)
             },
@@ -392,9 +393,9 @@ impl Board {
             for end_square in BitboardSquares::from_board(legal_moves) {
                 moves.extend(self.build_move(start_square, end_square, piece));
             }
-            if piece.piece_type == PieceType::Pawn && self.state.get_en_passant_target().is_some() {
+            if piece.piece_type == PieceType::Pawn && move_board & self.state.en_passant_target != 0 {
                 let end = self.state.get_en_passant_target().unwrap();
-                let capture_square = get_capture_square_for_en_passant(start_square, end);
+                let capture_square = get_capture_square_for_ep_target(end);
                 if capture_square == check.attacking_square && move_board & get_bit_for_square(end) != 0 {
                     moves.extend(self.build_move(start_square, end, piece))
                 }
@@ -461,13 +462,13 @@ impl Board {
             return Vec::new();
         }
         if piece.piece_type == PieceType::Pawn && end == self.state.get_en_passant_target().unwrap_or(255) {
-            let capture_square = get_capture_square_for_en_passant(start, end);
+            let capture_square = get_capture_square_for_ep_target(end);
             if self.position.en_passant_is_illegal(piece.color, start, end, capture_square) {
                 return Vec::new();
             } else {
-                let ep_capture = self.position.piece_at(&capture_square);
+                let ep_capture = self.position.piece_at(&capture_square).map(|p| *p);
                 let mut ep_basic = basic_move.clone();
-                ep_basic.capture = ep_capture.map(|p| *p);
+                ep_basic.capture = ep_capture;
                 match ep_capture {
                     Some(_) => return Vec::from([ Move::EnPassant(EnPassant::from_basic_move(&ep_basic, capture_square)) ]),
                     None => panic!("Invalid Move: Cannot create an en passant move without a capture!"),

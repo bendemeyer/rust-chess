@@ -77,7 +77,7 @@ impl Engine {
                 _ => (),
             }
             let change = board.make_move(&new_move);
-            //if board.in_check() { perft.increment_checks(depth + 1); }
+            if board.in_check() { perft.increment_checks(depth + 1); }
             Self::perft(board, depth + 1, max_depth, perft);
             board.unmake_move(change);
         }
