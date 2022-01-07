@@ -113,8 +113,8 @@ fn prepare_orthagonal_bitboards() -> FxHashMap<u8, u64> {
 
 fn generate_pawn_bitboard(square: u8, movement: PawnMovement) -> u64 {
     let mut board = 0u64;
-    let mut current_square = square;
     for (col_shift, row_shift) in movement.get_movements() {
+        let mut current_square = square;
         for _ in 0u8..movement.get_max_distance(square) {
             match BoardSquare::from_value(current_square).apply_movement(col_shift, row_shift) {
                 Err(_) => break,
@@ -283,17 +283,22 @@ fn get_moves_for_pawn_advance(square: u8, friendlies: u64, enemies: u64, mov: Pa
 fn get_moves_for_pawn(square: u8, friendlies: u64, enemies: u64, color: Color, en_passant_target: u64) -> u64 {
     let advance = match color { Color::White => PawnMovement::WhiteAdvance, Color::Black => PawnMovement::BlackAdvance };
     let attack = match color { Color::White => PawnMovement::WhiteAttack, Color::Black => PawnMovement::BlackAttack };
-    return get_moves_for_pawn_attacks(square, enemies, attack, en_passant_target) | get_moves_for_pawn_advance(square, friendlies, enemies, advance);
+    let advance_moves = get_moves_for_pawn_advance(square, friendlies, enemies, advance);
+    let attack_moves = get_moves_for_pawn_attacks(square, enemies, attack, en_passant_target);
+    let all_moves = advance_moves | attack_moves;
+    return all_moves;
 }
 
 
 fn get_moves_for_knight(square: u8, friendlies: u64) -> u64 {
-    return get_knight_bitboard(square) ^ friendlies
+    let board = get_knight_bitboard(square);
+    return board ^ (friendlies & board)
 }
 
 
 fn get_moves_for_king(square: u8, friendlies: u64) -> u64 {
-    return get_king_bitboard(square) ^ friendlies
+    let board = get_king_bitboard(square);
+    return board ^ (friendlies & board)
 }
 
 

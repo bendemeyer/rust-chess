@@ -309,7 +309,6 @@ impl Interface {
             },
             Move::EnPassant(e) => {
                 let start_piece = self.game.get_piece_at(e.basic_move.start).unwrap();
-                println!("En passant found for {} {} on {}, taking on {}", start_piece.color.value(), start_piece.piece_type.value(), &BoardSquare::from_value(e.basic_move.start).get_notation_string(), &BoardSquare::from_value(e.basic_move.end).get_notation_string());
                 let end_piece = self.game.get_piece_at(e.capture_square).unwrap();
                 let movement = format!("captures {} {} on {} en passant, moving to", end_piece.color.value(),
                                               end_piece.piece_type.value(), &BoardSquare::from_value(e.capture_square).get_notation_string());

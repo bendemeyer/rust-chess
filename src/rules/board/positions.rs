@@ -108,7 +108,7 @@ impl CastlingSquares {
 
 #[derive(Clone, Default)]
 pub struct BoardPositions {
-    piece_map: FxHashMap<u8, Piece>,
+    pub piece_map: FxHashMap<u8, Piece>,
     white_pieces: u64,
     white_king: u64,
     black_pieces: u64,
@@ -122,12 +122,10 @@ pub struct BoardPositions {
 
 impl BoardPositions {
     pub fn from_piece_map(map: FxHashMap<u8, Piece>) -> Self {
-        let mut locs: Self = map.clone().into_iter().fold(Default::default(), |mut locs, (s, p)| {
+        return map.into_iter().fold(Default::default(), |mut locs, (s, p)| {
             locs.insert_piece(s, p);
             locs
         });
-        locs.piece_map = map.clone();
-        return locs;
     }
 
     pub fn get_piece_map(&self) -> &FxHashMap<u8, Piece> {
@@ -211,7 +209,7 @@ impl BoardPositions {
                     PieceType::Bishop => self.bishops = unset_bit_at_square(self.bishops, square),
                     PieceType::Rook   => self.rooks   = unset_bit_at_square(self.rooks, square),
                     PieceType::Queen  => self.queens  = unset_bit_at_square(self.queens, square),
-                    PieceType::King   => panic!("Cannot capture a king!"),
+                    PieceType::King   => (),
                 }
                 Some(p)
             }
@@ -447,6 +445,15 @@ impl BoardPositions {
         let enemies = self.get_all_piece_locations(attacking_color);
         let all_pieces = (friendlies | enemies) & !current_king_location;
 
+        if self.get_piece_locations(attacking_color, PieceType::Knight) & get_knight_bitboard(king_square) != 0 {
+            return true;
+        }
+
+        let pawn_attacks = match king_color { Color::White => PawnMovement::WhiteAttack, Color::Black => PawnMovement::BlackAttack };
+        if  self.get_piece_locations(attacking_color, PieceType::Pawn) & get_pawn_bitboard(king_square, pawn_attacks) != 0 {
+            return true;
+        }
+
         let diagonal_attackers = self.get_diagonal_slider_locations(attacking_color);
         let diagonal_bitboard = get_diagonal_bitboard(king_square);
         if diagonal_attackers & diagonal_bitboard != 0 {
@@ -458,6 +465,7 @@ impl BoardPositions {
                 if potential_attacker & diagonal_attackers != 0 { return true };
             }
         }
+
         let orthagonal_attackers = self.get_orthagonal_slider_locations(attacking_color);
         let orthagonal_bitboard = get_orthagonal_bitboard(king_square);
         if orthagonal_attackers & orthagonal_bitboard != 0 {
@@ -469,6 +477,7 @@ impl BoardPositions {
                 if potential_attacker & orthagonal_attackers != 0 { return true };
             }
         }
+
         return false;
     }
 }
