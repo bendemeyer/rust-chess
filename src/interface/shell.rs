@@ -1,6 +1,7 @@
-use std::fs::OpenOptions;
+use std::fs::File;
+use std::path::Path;
 
-use rustyline::{Editor, Config, Cmd, KeyEvent, KeyCode, Modifiers};
+use rustyline::{Editor, Config};
 
 use crate::interface::arguments::{ArgumentParser, ParsedArgs};
 use crate::util::errors::InputError;
@@ -25,10 +26,10 @@ impl InteractiveShell {
             parser: parser,
         };
 
-        let _ = OpenOptions::new().create_new(true).write(true).open(HISTORY_FILE);
-        shell.editor.load_history(HISTORY_FILE).unwrap();
-        shell.editor.bind_sequence(KeyEvent { 0: KeyCode::Up, 1: Modifiers::NONE }, Cmd::PreviousHistory);
-        shell.editor.bind_sequence(KeyEvent { 0: KeyCode::Down, 1: Modifiers::NONE }, Cmd::NextHistory);
+        if !Path::new(HISTORY_FILE).is_file() {
+            File::create(HISTORY_FILE).expect("History file creation failed");
+        }
+        shell.editor.load_history(HISTORY_FILE).expect("Loading history file failed");
 
         return shell
     }
@@ -48,7 +49,7 @@ impl InteractiveShell {
     pub fn get_command(&mut self) -> Result<ParsedArgs, InputError> {
         let input = self.editor.readline(&self.prompt).unwrap();
         self.editor.add_history_entry(input.clone());
-        self.editor.append_history(HISTORY_FILE).unwrap();
+        self.editor.append_history(HISTORY_FILE).expect("Appending to history failed");
         return self.parser.parse(&input);
     }
 }

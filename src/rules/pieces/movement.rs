@@ -168,12 +168,6 @@ pub struct PieceMovement {
     pub end_square: u8,
 }
 
-impl PieceMovement {
-    pub fn get_piece(&self) -> Piece {
-        return Piece { color: self.color, piece_type: self.piece_type }
-    }
-}
-
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Capture {
     pub color: Color,
@@ -217,17 +211,6 @@ impl Move {
             &Move::Promotion(m) => m.basic_move.get_capture(),
             &Move::TwoSquarePawnMove(m) => m.basic_move.get_capture(),
             &Move::EnPassant(m) => m.get_capture(),
-        }
-    }
-
-    pub fn print_info(&self) {
-        match self {
-            Move::NewGame(_m) => println!("New Game"),
-            Move::BasicMove(m) => println!("Basic move: {} to {}", m.start, m.end),
-            Move::Castle(m) => println!("Castle: {} {}", match m.color { Color::White => "white", Color::Black => "black" }, match m.side { CastleType::Kingside => "kingside", CastleType::Queenside => "queenside" }),
-            Move::Promotion(m) => println!("Promotion: {} to {}, promote to {}", m.basic_move.start, m.basic_move.end, m.promote_to.value()),
-            Move::TwoSquarePawnMove(m) => println!("Two square pawn move: {} to {}", m.basic_move.start, m.basic_move.end),
-            Move::EnPassant(m) => println!("En passant: {} to {}", m.basic_move.start, m.basic_move.end),
         }
     }
 }

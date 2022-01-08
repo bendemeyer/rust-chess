@@ -1,5 +1,4 @@
 use crate::rules::Color;
-use crate::util::FxIndexSet;
 use crate::util::errors::ValueError;
 
 
@@ -15,46 +14,6 @@ pub enum BoardSquare {
     A8, B8, C8, D8, E8, F8, G8, H8,
 }
 
-pub enum BoardColumn {
-    A, B, C, D, E, F, G, H,
-}
-
-pub enum BoardRow {
-    Row1, Row2, Row3, Row4, Row5, Row6, Row7, Row8,
-}
-
-pub enum BoardDiagonal {
-    A1H8, B1H7, C1H6, D1H5, E1H4, F1H3, G1H2,
-    B1A2, C1A3, D1A4, E1A5, F1A6, G1A7, H1A8,
-    A2G8, A3F8, A4E8, A5D8, A6C8, A7B8,
-    H2B8, H3C8, H4D8, H5E8, H6F8, H7G8,
-}
-
-
-lazy_static! {
-    pub static ref ROW_1: FxIndexSet<u8> = [  0u8,  1u8,  2u8,  3u8,  4u8,  5u8,  6u8,  7u8 ].into_iter().collect();
-    pub static ref ROW_2: FxIndexSet<u8> = [  8u8,  9u8, 10u8, 11u8, 12u8, 13u8, 14u8, 15u8 ].into_iter().collect();
-    pub static ref ROW_3: FxIndexSet<u8> = [ 16u8, 17u8, 18u8, 19u8, 20u8, 21u8, 22u8, 23u8 ].into_iter().collect();
-    pub static ref ROW_4: FxIndexSet<u8> = [ 24u8, 25u8, 26u8, 27u8, 28u8, 29u8, 30u8, 31u8 ].into_iter().collect();
-    pub static ref ROW_5: FxIndexSet<u8> = [ 32u8, 33u8, 34u8, 35u8, 36u8, 37u8, 38u8, 39u8 ].into_iter().collect();
-    pub static ref ROW_6: FxIndexSet<u8> = [ 40u8, 41u8, 42u8, 43u8, 44u8, 45u8, 46u8, 47u8 ].into_iter().collect();
-    pub static ref ROW_7: FxIndexSet<u8> = [ 48u8, 49u8, 50u8, 51u8, 52u8, 53u8, 54u8, 55u8 ].into_iter().collect();
-    pub static ref ROW_8: FxIndexSet<u8> = [ 56u8, 57u8, 58u8, 59u8, 60u8, 61u8, 62u8, 63u8 ].into_iter().collect();
-}
-
-
-pub fn square_in_row(square: &u8, row: BoardRow) -> bool {
-    return match row {
-        BoardRow::Row1 => ROW_1.contains(square),
-        BoardRow::Row2 => ROW_2.contains(square),
-        BoardRow::Row3 => ROW_3.contains(square),
-        BoardRow::Row4 => ROW_4.contains(square),
-        BoardRow::Row5 => ROW_5.contains(square),
-        BoardRow::Row6 => ROW_6.contains(square),
-        BoardRow::Row7 => ROW_7.contains(square),
-        BoardRow::Row8 => ROW_8.contains(square),
-    }
-}
 
 pub fn move_from_square(square: u8, col_shift: i8, row_shift: i8) -> Result<u8, ValueError> {
     let start = square as i8;
@@ -134,19 +93,11 @@ fn get_col_and_row_from_notation(note: &str) -> [char; 2] {
     return [ note.chars().into_iter().nth(0).unwrap(), note.chars().into_iter().nth(1).unwrap() ]
 }
 
-fn get_notation_from_col_and_row(arr: [char; 2]) -> String {
-    return arr.into_iter().collect()
-}
-
 
 pub fn get_notation_for_square(square: u8) -> Result<[char; 2], ValueError> {
     if square > 63 { return Err(ValueError::new("Cannot get notation for invalid square")) }
     let [ col, row ] = get_col_and_row_from_square(square);
     return Ok([map_col_to_name(col), map_row_to_name(row)])
-}
-
-pub fn get_notation_string_for_square(square: u8) -> Result<String, ValueError> {
-    return Ok(get_notation_for_square(square)?.iter().collect());
 }
 
 pub fn get_square_from_notation(note: &str) -> u8 {

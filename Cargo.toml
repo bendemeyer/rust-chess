@@ -11,7 +11,6 @@ debug = true
 [dependencies]
 lazy_static = "1.4.0"
 fxhash      = "0.2.1"
-indexmap    = "1.7.0"
 shell-words = "1.0.0"
 rustyline   = "9.1.1"
 tabled      = "0.3.0"

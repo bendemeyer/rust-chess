@@ -7,7 +7,7 @@ pub mod state;
 use fxhash::FxHashMap;
 
 use crate::rules::board::positions::CastlingSquares;
-use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION, get_notation_for_piece};
+use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION};
 use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_gain_castle_right, zobrist_update_add_en_passant_target, zobrist_update_unapply_move};
 
 use self::bitboards::{BitboardSquares, get_bit_for_square, get_moves_for_piece};
@@ -59,17 +59,6 @@ fn piece_map_from_fen_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> FxHa
         })
     });
     return piece_map;
-}
-
-fn print_fen_board(board: [[Option<(Color, PieceType)>; 8]; 8]) {
-    board.iter().for_each(|row| {
-        println!("{}", row.iter().map(|square| {
-            match square {
-                Some((c, p)) => get_notation_for_piece(*c, *p).to_string(),
-                None => String::from("-")
-            }
-        }).collect::<Vec<String>>().join(" "))
-    })
 }
 
 pub fn fen_board_from_piece_map(piece_map: &FxHashMap<u8, Piece>) -> [[Option<(Color, PieceType)>; 8]; 8] {
@@ -154,16 +143,6 @@ fn get_castle_details(color: Color, castle_type: CastleType) -> &'static Castlin
     return CASTLING_MOVES.get(&color).unwrap().get(&castle_type).unwrap()
 }
 
-fn get_castle_for_rook_position(square: u8) -> Option<(Color, CastleType)> {
-    return match square {
-        0  => Some((Color::White, CastleType::Queenside)),
-        7  => Some((Color::White, CastleType::Kingside)),
-        56 => Some((Color::Black, CastleType::Queenside)),
-        63 => Some((Color::Black, CastleType::Kingside)),
-        _  => None
-    }
-}
-
 
 #[derive(Clone)]
 pub struct Board {
@@ -188,10 +167,6 @@ impl Board {
 
     pub fn get_piece_map(&self) -> &FxHashMap<u8, Piece> {
         return self.position.get_piece_map();
-    }
-
-    pub fn get_state(&self) -> &BoardState {
-        return &self.state;
     }
 
     pub fn get_legal_moves(&self) -> Vec<Move> {
