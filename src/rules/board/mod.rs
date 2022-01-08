@@ -214,7 +214,6 @@ impl Board {
     }
 
     pub fn make_move(&mut self, new_move: &Move) -> ReversibleBoardChange {
-        let last_fen = self.to_fen();
         let result = ReversibleBoardChange {
             move_made: *new_move,
             revoked_castle_rights: self.revoke_castle_rights(new_move),
@@ -232,12 +231,7 @@ impl Board {
         }
         self.state.increment_halfmove_clock();
         match self.position.apply_move(new_move) {
-            Err(e) => {
-                let _board = &self.position.piece_map;
-                println!("{}", last_fen);
-                new_move.print_info();
-                panic!("{}", e.msg)
-            },
+            Err(e) => panic!("{}", e.msg),
             Ok((piece, cap)) => {
                 if piece.piece_type == PieceType::Pawn { self.state.reset_halfmove_clock() }
                 match cap { Some(_) => self.state.reset_halfmove_clock(), None => () }
