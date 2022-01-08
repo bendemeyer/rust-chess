@@ -93,8 +93,6 @@ impl Engine {
             calculated_nodes: 0,
         };
         Self::search(ctx.best_possible(), ctx.worst_possible(), 0, &mut ctx);
-        println!("Seach had {} cache hits", ctx.cache_hits);
-        println!("Search calculated {} nodes", ctx.calculated_nodes);
         return ctx.results;
     }
 

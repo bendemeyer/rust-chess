@@ -94,9 +94,9 @@ fn get_adjustment_for_change(change: BoardChange) -> u64 {
 
 
 pub fn zobrist_init(changes: Vec<BoardChange>) -> u64 {
-    let mut state = 0;
+    let mut state = 0u64;
     for change in changes {
-        state = zobrist_update_in(0, change);
+        state = zobrist_update_in(state, change);
     }
     return state;
 }
@@ -112,58 +112,50 @@ pub fn zobrist_update_out(hash: u64, change: BoardChange) -> u64 {
 }
 
 
-pub fn zobrist_update_apply_move(hash: u64, new_move: &Move) -> u64 {
-    let mut state = hash;
+pub fn zobrist_update_apply_move(mut hash: u64, new_move: &Move) -> u64 {
     for movement in new_move.get_piece_movements() {
-        state = zobrist_update_out(state, BoardChange::PieceLocation(PieceLocation {
+        hash = zobrist_update_out(hash, BoardChange::PieceLocation(PieceLocation {
             color: movement.color,
             piece_type: movement.piece_type,
             square: movement.start_square
         }));
-        state = zobrist_update_in(state, BoardChange::PieceLocation(PieceLocation {
+        hash = zobrist_update_in(hash, BoardChange::PieceLocation(PieceLocation {
             color: movement.color,
             piece_type: movement.piece_type,
             square: movement.end_square
         }));
     }
-    match new_move.get_capture() {
-        Some(c) => {
-            state = zobrist_update_out(state, BoardChange::PieceLocation(PieceLocation {
-                color: c.color,
-                piece_type: c.piece_type,
-                square: c.square
-            }));
-        },
-        None => ()
+    if let Some(c) = new_move.get_capture() {
+        hash = zobrist_update_out(hash, BoardChange::PieceLocation(PieceLocation {
+            color: c.color,
+            piece_type: c.piece_type,
+            square: c.square
+        }));
     }
-    return state;
+    return hash;
 }
 
-pub fn zobrist_update_unapply_move(hash: u64, new_move: &Move) -> u64 {
-    let mut state = hash;
-    for movement in new_move.get_piece_movements() {
-        state = zobrist_update_in(state, BoardChange::PieceLocation(PieceLocation {
+pub fn zobrist_update_unapply_move(mut hash: u64, old_move: &Move) -> u64 {
+    for movement in old_move.get_piece_movements() {
+        hash = zobrist_update_in(hash, BoardChange::PieceLocation(PieceLocation {
             color: movement.color,
             piece_type: movement.piece_type,
             square: movement.start_square
         }));
-        state = zobrist_update_out(state, BoardChange::PieceLocation(PieceLocation {
+        hash = zobrist_update_out(hash, BoardChange::PieceLocation(PieceLocation {
             color: movement.color,
             piece_type: movement.piece_type,
             square: movement.end_square
         }));
     }
-    match new_move.get_capture() {
-        Some(c) => {
-            state = zobrist_update_in(state, BoardChange::PieceLocation(PieceLocation {
-                color: c.color,
-                piece_type: c.piece_type,
-                square: c.square
-            }));
-        },
-        None => ()
+    if let Some(c) = old_move.get_capture() {
+        hash = zobrist_update_in(hash, BoardChange::PieceLocation(PieceLocation {
+            color: c.color,
+            piece_type: c.piece_type,
+            square: c.square
+        }));
     }
-    return state;
+    return hash;
 }
 
 
