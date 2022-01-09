@@ -100,6 +100,10 @@ pub fn get_notation_for_square(square: u8) -> Result<[char; 2], ValueError> {
     return Ok([map_col_to_name(col), map_row_to_name(row)])
 }
 
+pub fn get_notation_string_for_square(square: u8) -> Result<String, ValueError> {
+    return Ok(get_notation_for_square(square)?.into_iter().collect());
+}
+
 pub fn get_square_from_notation(note: &str) -> u8 {
     let [col, row] = get_col_and_row_from_notation(note);
     return get_square_from_col_and_row(map_name_to_col(col), map_name_to_row(row));

@@ -1,3 +1,4 @@
+pub mod concurrency;
 pub mod errors;
 pub mod fen;
 pub mod zobrist;

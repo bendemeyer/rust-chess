@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use tabled::{Table, Style};
 
-use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::BoardSquare}, pieces::{PieceType, movement::Move}}, util::fen::{get_notation_for_piece, FenBoardState}};
+use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}}, pieces::{PieceType, movement::Move}}, util::fen::{get_notation_for_piece, FenBoardState}};
 
 use super::arguments::{ArgumentParser, Arguments};
 
@@ -31,8 +31,38 @@ fn build_argument_parser() -> ArgumentParser {
         .add_flag_arg("as_fen", HashSet::from(["--as-fen"])).unwrap();
 
     builder.add_subcommand("search").unwrap()
-        .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap();
+        .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap()
+        .add_named_arg("threads", HashSet::from(["--threads"]), false, false).unwrap();
+
+    builder.add_subcommand("exit").unwrap();
+
     return builder.build();
+}
+
+
+fn get_text_for_move(mov: &Move) -> String {
+    return match mov {
+        Move::NewGame(_) => {
+            String::from("new game")
+        },
+        Move::Castle(c) => {
+            format!("{} castles {}", c.color.value(), c.side.value())
+        },
+        _ => {
+            let movement = mov.get_piece_movements()[0];
+            let piece_text = format!("{} {} on {}", movement.color.value(), movement.piece_type.value(), get_notation_string_for_square(movement.start_square).unwrap());
+            let movement_text = match mov.get_capture() {
+                Some(c) => format!("captures {} {} on", c.color.value(), c.piece_type.value()),
+                None => String::from("moves to"),
+            };
+            let result_text = match mov {
+                Move::EnPassant(e) => format!("{} en passant, moving to {}", get_notation_string_for_square(e.capture_square).unwrap(), get_notation_string_for_square(movement.end_square).unwrap()),
+                Move::Promotion(p) => format!("{} and promotes to a {}", get_notation_string_for_square(movement.end_square).unwrap(), p.promote_to.value()),
+                _ => format!("{}", get_notation_string_for_square(movement.end_square).unwrap()),
+            };
+            format!("{} {} {}", piece_text, movement_text, result_text)
+        }
+    }
 }
 
 
@@ -73,9 +103,9 @@ impl Interface {
                         "move"          => self.do_move(*s.args),
                         "perft"         => self.do_perft(*s.args),
                         "search"        => self.do_search(*s.args),
-                        "suggest"       => self.do_suggest(*s.args),
                         "serialize"     => self.do_serialize(*s.args),
                         "board"         => self.do_board(*s.args),
+                        "exit"          => break,
                         x => println!("Unknown subcommand {} encountered", x)
                     },
                     ParsedArgs::Arguments(a) => {
@@ -122,7 +152,7 @@ impl Interface {
                 match a.get_arg("type").unwrap().as_str() {
                     "moves" => {
                         for m in self.game.get_legal_moves() {
-                            self.shell.output(&self.get_text_for_move(&m));
+                            self.shell.output(&get_text_for_move(&m));
                         }
                     },
                     x => self.shell.output(&format!("Unrecognized list type: '{}'", x))
@@ -144,7 +174,7 @@ impl Interface {
                     None => self.shell.output("No matching legal move found!"),
                     Some(m) => {
                         self.shell.output("Is this the move you want to make:");
-                        self.shell.output(&self.get_text_for_move(&m));
+                        self.shell.output(&get_text_for_move(&m));
                         let confirm = self.shell.input("(y/N) ");
                         match self.confirmations.contains(&confirm.to_lowercase()) {
                             false => self.shell.output("OK, aborting..."),
@@ -240,17 +270,15 @@ impl Interface {
                     None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
                 };
                 self.shell.output("Searching...");
-                self.game.search(depth);
+                let result = match a.get_arg("threads") {
+                    Some(t) => self.game.threaded_search(depth, t.parse().unwrap()),
+                    None => self.game.search(depth),
+                };
                 self.shell.output("Search complete!");
-            }
-        }
-    }
-    
-    fn do_suggest(&self, args: ParsedArgs) {
-        match args {
-            ParsedArgs::SubCommand(_s) => panic!("Subcommand 'suggest' should not have its own subcommands"),
-            ParsedArgs::Arguments(_a) => {
-                self.shell.output(&self.get_text_for_move(self.game.suggest_move()));
+                self.shell.empty_line();
+                self.shell.output(&format!("Evaluated {} nodes with {} cache hits in {:?}", result.calculated_nodes, result.cache_hits, result.search_time));
+                self.shell.output(&format!("Score: {}", result.get_score()));
+                self.shell.output(&format!("Best move: {}", &get_text_for_move(result.get_move())));
             }
         }
     }
@@ -285,74 +313,6 @@ impl Interface {
             _   => {
                 self.shell.output("Invalid selection! Please enter either 1, 2, 3, or 4");
                 return self.get_promotion_choice();
-            }
-        }
-    }
-
-    fn get_text_for_move(&self, m: &Move) -> String {
-        match m {
-            Move::BasicMove(b) => {
-                let start_piece = self.game.get_piece_at(b.start).unwrap();
-                let end_piece = self.game.get_piece_at(b.end);
-                let movement = match end_piece {
-                    Some(p) => format!("captures {} {} on", p.color.value(), p.piece_type.value()),
-                    None => String::from("moves to"),
-                };
-                format_move_elements(
-                    start_piece.color.value(),
-                    start_piece.piece_type.value(),
-                    &BoardSquare::from_value(b.start).get_notation_string(),
-                    &movement,
-                    &BoardSquare::from_value(b.end).get_notation_string(),
-                    ""
-                )
-            },
-            Move::EnPassant(e) => {
-                let start_piece = self.game.get_piece_at(e.basic_move.start).unwrap();
-                let end_piece = self.game.get_piece_at(e.capture_square).unwrap();
-                let movement = format!("captures {} {} on {} en passant, moving to", end_piece.color.value(),
-                                              end_piece.piece_type.value(), &BoardSquare::from_value(e.capture_square).get_notation_string());
-                format_move_elements(
-                    start_piece.color.value(),
-                    start_piece.piece_type.value(),
-                    &BoardSquare::from_value(e.basic_move.start).get_notation_string(),
-                    &movement,
-                    &BoardSquare::from_value(e.basic_move.end).get_notation_string(),
-                    ""
-                )
-            },
-            Move::Promotion(p) => {
-                let start_piece = self.game.get_piece_at(p.basic_move.start).unwrap();
-                let end_piece = self.game.get_piece_at(p.basic_move.end);
-                let movement = match end_piece {
-                    Some(p) => format!("captures {} {} on", p.color.value(), p.piece_type.value()),
-                    None => String::from("moves to"),
-                };
-                format_move_elements(
-                    start_piece.color.value(),
-                    start_piece.piece_type.value(),
-                    &BoardSquare::from_value(p.basic_move.start).get_notation_string(),
-                    &movement,
-                    &BoardSquare::from_value(p.basic_move.end).get_notation_string(),
-                    &format!(" and promotes to a {}", p.promote_to.value())
-                )
-            },
-            Move::TwoSquarePawnMove(t) => {
-                let start_piece = self.game.get_piece_at(t.basic_move.start).unwrap();
-                format_move_elements(
-                    start_piece.color.value(),
-                    start_piece.piece_type.value(),
-                    &BoardSquare::from_value(t.basic_move.start).get_notation_string(),
-                    "moves to",
-                    &BoardSquare::from_value(t.basic_move.end).get_notation_string(),
-                    ""
-                )
-            },
-            Move::Castle(c) => {
-                format!("{} castles {}", self.game.get_current_turn().value(), c.side.value())
-            },
-            Move::NewGame(_) => {
-                String::from("new game")
             }
         }
     }
