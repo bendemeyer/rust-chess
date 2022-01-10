@@ -50,24 +50,19 @@ fn get_text_for_move(mov: &Move) -> String {
         },
         _ => {
             let movement = mov.get_piece_movements()[0];
-            let piece_text = format!("{} {} on {}", movement.color.value(), movement.piece_type.value(), get_notation_string_for_square(movement.start_square).unwrap());
+            let piece_text = format!("{} {} on {}", movement.color.value(), movement.piece_type.name(), get_notation_string_for_square(movement.start_square).unwrap());
             let movement_text = match mov.get_capture() {
-                Some(c) => format!("captures {} {} on", c.color.value(), c.piece_type.value()),
+                Some(c) => format!("captures {} {} on", c.color.value(), c.piece_type.name()),
                 None => String::from("moves to"),
             };
             let result_text = match mov {
                 Move::EnPassant(e) => format!("{} en passant, moving to {}", get_notation_string_for_square(e.capture_square).unwrap(), get_notation_string_for_square(movement.end_square).unwrap()),
-                Move::Promotion(p) => format!("{} and promotes to a {}", get_notation_string_for_square(movement.end_square).unwrap(), p.promote_to.value()),
+                Move::Promotion(p) => format!("{} and promotes to a {}", get_notation_string_for_square(movement.end_square).unwrap(), p.promote_to.name()),
                 _ => format!("{}", get_notation_string_for_square(movement.end_square).unwrap()),
             };
             format!("{} {} {}", piece_text, movement_text, result_text)
         }
     }
-}
-
-
-fn format_move_elements(color: &str, piece: &str, start: &str, movement: &str, end: &str, additional: &str) -> String {
-    return format!("{} {} on {} {} {}{}", color, piece, start, movement, end, additional);
 }
 
 

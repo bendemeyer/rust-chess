@@ -168,6 +168,12 @@ pub struct PieceMovement {
     pub end_square: u8,
 }
 
+impl PieceMovement {
+    pub fn get_piece(&self) -> Piece {
+        return Piece { color: self.color, piece_type: self.piece_type }
+    }
+}
+
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Capture {
     pub color: Color,
@@ -193,25 +199,31 @@ pub enum Move {
 
 impl Move {
     pub fn get_piece_movements(&self) -> Vec<PieceMovement> {
-        match &self {
-            &Move::NewGame(_m) => Vec::new(),
-            &Move::BasicMove(m) => m.get_piece_movements(),
-            &Move::Castle(m) => m.get_piece_movements(),
-            &Move::Promotion(m) => m.basic_move.get_piece_movements(),
-            &Move::TwoSquarePawnMove(m) => m.basic_move.get_piece_movements(),
-            &Move::EnPassant(m) => m.basic_move.get_piece_movements(),
+        match self {
+            Move::NewGame(_m) => Vec::new(),
+            Move::BasicMove(m) => m.get_piece_movements(),
+            Move::Castle(m) => m.get_piece_movements(),
+            Move::Promotion(m) => m.basic_move.get_piece_movements(),
+            Move::TwoSquarePawnMove(m) => m.basic_move.get_piece_movements(),
+            Move::EnPassant(m) => m.basic_move.get_piece_movements(),
         }
     }
 
     pub fn get_capture(&self) -> Option<Capture> {
-        match &self {
-            &Move::NewGame(_m) => None,
-            &Move::BasicMove(m) => m.get_capture(),
-            &Move::Castle(m) => m.get_capture(),
-            &Move::Promotion(m) => m.basic_move.get_capture(),
-            &Move::TwoSquarePawnMove(m) => m.basic_move.get_capture(),
-            &Move::EnPassant(m) => m.get_capture(),
+        match self {
+            Move::NewGame(_m) => None,
+            Move::BasicMove(m) => m.get_capture(),
+            Move::Castle(m) => m.get_capture(),
+            Move::Promotion(m) => m.basic_move.get_capture(),
+            Move::TwoSquarePawnMove(m) => m.basic_move.get_capture(),
+            Move::EnPassant(m) => m.get_capture(),
         }
+    }
+
+    pub fn relative_capture_value(&self) -> Option<i16> {
+        self.get_capture().map(|cap| {
+            self.get_piece_movements()[0].get_piece().relative_value(cap.get_piece())
+        })
     }
 }
 

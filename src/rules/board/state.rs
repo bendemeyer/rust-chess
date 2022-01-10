@@ -1,6 +1,6 @@
 use crate::rules::{Color, pieces::movement::{Move, CastleType}};
 
-use super::bitboards::get_bit_for_square;
+use super::{bitboards::get_bit_for_square, positions::{Attack, Pin}};
 
 
 pub struct ReversibleBoardChange {
@@ -9,6 +9,16 @@ pub struct ReversibleBoardChange {
     pub prior_en_passant_target: u64,
     pub prior_halfmove_clock: u8,
     pub prior_move_number: u8,
+}
+
+
+pub struct BoardChange {
+    pub new_move: Move,
+    checks: Vec<Attack>,
+    absolute_pins: Vec<Pin>,
+    responses: Vec<Move>,
+    revoked_castle_rights: Vec<CastleRight>,
+
 }
 
 

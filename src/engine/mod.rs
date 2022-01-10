@@ -1,4 +1,4 @@
-use std::{sync::{Mutex, Arc}, time::{Duration, Instant}};
+use std::{sync::{Mutex, Arc}, time::{Duration, Instant}, cmp::Ordering};
 
 use tabled::Tabled;
 
@@ -8,6 +8,28 @@ use self::{scores::{best_score, is_better}, evaluation::evaluate_board};
 
 pub mod evaluation;
 pub mod scores;
+
+
+impl PartialOrd for Move {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Move {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.relative_capture_value(), other.relative_capture_value()) {
+            (Some(val), Some(other_val)) => {
+                if val > other_val { Ordering::Greater }
+                else if val < other_val { Ordering::Less }
+                else { Ordering::Equal }
+            },
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None) => Ordering::Equal,
+        }
+    }
+}
 
 
 enum PerftType {
@@ -233,7 +255,9 @@ impl Engine {
         let transposition_table: Mutex<ZobristHashMap<i16>> = Mutex::new(Default::default());
         let mut result = SearchResult::from_color(board.state.get_move_color());
         result.start();
-        for m in board.get_legal_moves() {
+        let mut moves = board.get_legal_moves();
+        moves.sort();
+        for m in moves.into_iter().rev() {
             let mut updated_board = board.clone();
             updated_board.make_move(&m);
 
@@ -261,14 +285,15 @@ impl Engine {
         let best_forcible: Arc<Mutex<i16>> = Arc::new(Mutex::new(best_score(board.state.get_move_color().swap())));
         let mut result = SearchResult::from_color(board.state.get_move_color());
         result.start();
-        let queue = WorkQueue::from_iter(board.get_legal_moves().into_iter().map(|m| {
+        let mut moves = board.get_legal_moves();
+        moves.sort();
+        let queue = WorkQueue::from_iter(moves.into_iter().rev().map(|m| {
             let transpositions = Arc::clone(&transposition_table);
             let current_best_mutex = Arc::clone(&best_forcible);
             let mut updated_board = board.clone();
             let parent_color = updated_board.state.get_move_color();
             move || {
                 updated_board.make_move(&m);
-
                 let mut ctx = SearchContext {
                     board: updated_board,
                     cache_hits: 0,
@@ -314,7 +339,9 @@ impl Engine {
             ctx.calculated_nodes += 1;
             return evaluate_board(&ctx.board)
         }
-        for m in ctx.board.get_legal_moves() {
+        let mut moves = ctx.board.get_legal_moves();
+        moves.sort();
+        for m in moves.into_iter().rev() {
             let change = ctx.board.make_move(&m);
             let cache_hit: Option<i16>;
             {
