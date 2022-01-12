@@ -4,13 +4,16 @@ pub mod squares;
 pub mod state;
 
 
+use std::sync::mpsc::channel;
+
 use fxhash::FxHashMap;
 
 use crate::rules::board::positions::CastlingSquares;
+use crate::util::concurrency::{QueuedThreadPool, Job};
 use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION};
 use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_gain_castle_right, zobrist_update_add_en_passant_target, zobrist_update_unapply_move};
 
-use self::bitboards::{BitboardSquares, get_bit_for_square, get_moves_for_piece};
+use self::bitboards::{BitboardSquares, get_bit_for_square, get_moves_for_piece, PieceSquare};
 use self::positions::{BoardPositions, Pin, AttacksAndPins, Attack};
 use self::squares::{BoardSquare, get_col_and_row_from_square, get_square_from_col_and_row, is_fourth_rank, is_eighth_rank, is_second_rank};
 use self::state::{CastleRight, BoardState, BoardCastles, ReversibleBoardChange};
@@ -61,11 +64,11 @@ fn piece_map_from_fen_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> FxHa
     return piece_map;
 }
 
-pub fn fen_board_from_piece_map(piece_map: &FxHashMap<u8, Piece>) -> [[Option<(Color, PieceType)>; 8]; 8] {
+pub fn fen_board_from_position(position: &BoardPositions) -> [[Option<(Color, PieceType)>; 8]; 8] {
     let mut board: [[Option<(Color, PieceType)>; 8]; 8] = Default::default();
     (0u8..=7u8).rev().enumerate().for_each(|(row, index )| {
         (0u8..=7u8).for_each(|col| {
-            board[index as usize][col as usize] = match piece_map.get(&(col + ((row as u8) * 8))) { Some(p) => Some((p.color, p.piece_type)), None => None }
+            board[index as usize][col as usize] = match position.piece_at(&(col + ((row as u8) * 8))) { Some(p) => Some((p.color, p.piece_type)), None => None }
         })
     });
     return board;
@@ -121,7 +124,7 @@ fn board_from_fen_state(state: FenBoardState) -> Board {
 
 fn fen_state_from_board(board: &Board) -> FenBoardState {
     return FenBoardState {
-        board: fen_board_from_piece_map(board.get_piece_map()),
+        board: fen_board_from_position(&board.position),
         to_move: board.state.to_move,
         castling: Castling {
             white_kingside: board.state.castle_rights.white_kingside,
@@ -141,6 +144,65 @@ fn fen_state_from_board(board: &Board) -> FenBoardState {
 
 fn get_castle_details(color: Color, castle_type: CastleType) -> &'static CastlingSquares {
     return CASTLING_MOVES.get(&color).unwrap().get(&castle_type).unwrap()
+}
+
+
+fn get_legal_moves_for_pinned_piece(position: BoardPositions, pin: Pin, ep_target: u64) -> Vec<Move> {
+    let pinned_piece = position.piece_at(&pin.pinned_square).unwrap();
+    let move_board = get_moves_for_piece(
+        pin.pinned_square,
+        pinned_piece,
+        position.get_all_piece_locations(pinned_piece.color),
+        position.get_all_piece_locations(pinned_piece.color.swap()),
+        ep_target);
+    let legal_moves = move_board & (pin.pin_path | get_bit_for_square(pin.pinning_square));
+    BitboardSquares::from_board(legal_moves).fold(Vec::new(), |mut moves, s| {
+        moves.extend(build_move(position, pin.pinned_square, s, pinned_piece, ep_target));
+        moves
+    })
+}
+
+fn get_moves_for_piece_square(position: BoardPositions, loc: PieceSquare, ep_target: u64) -> Vec<Move> {
+    let move_board = get_moves_for_piece(
+        loc.square,
+        loc.piece,
+        position.get_all_piece_locations(loc.piece.color),
+        position.get_all_piece_locations(loc.piece.color.swap()),
+        ep_target);
+    BitboardSquares::from_board(move_board).fold(Vec::new(), |mut moves, s| {
+        moves.extend(build_move(position, loc.square, s, loc.piece, ep_target));
+        moves
+    })
+}
+
+fn build_move(position: BoardPositions, start: u8, end: u8, piece: Piece, ep_target: u64) -> Vec<Move> {
+    let capture = position.piece_at(&end).map(|p| p);
+    let basic_move = BasicMove { piece: piece, start: start, end: end, capture: capture };
+    if piece.piece_type == PieceType::King && position.is_check(end, piece.color) {
+        return Vec::new();
+    }
+    if piece.piece_type == PieceType::Pawn && end == ep_target.trailing_zeros() as u8 {
+        let capture_square = get_capture_square_for_ep_target(end);
+        if position.en_passant_is_illegal(piece.color, start, end, capture_square) {
+            return Vec::new();
+        } else {
+            let ep_capture = position.piece_at(&capture_square).map(|p| p);
+            let mut ep_basic = basic_move.clone();
+            ep_basic.capture = ep_capture;
+            match ep_capture {
+                Some(_) => return Vec::from([ Move::EnPassant(EnPassant::from_basic_move(&ep_basic, capture_square)) ]),
+                None => panic!("Invalid Move: Cannot create an en passant move without a capture!"),
+            }
+        }
+    } else if piece.piece_type == PieceType::Pawn && is_eighth_rank(end, piece.color) {
+        return Promotion::get_all_from_basic_move(&basic_move).into_iter().map(|p| { Move::Promotion(p) }).collect()
+    } else if piece.piece_type == PieceType::Pawn && is_second_rank(start, piece.color) && is_fourth_rank(end, piece.color) {
+        if capture.is_some() { panic!("Invalid Move: Cannot create a two square pawn move with a captured piece!") }
+        let en_passant_target = get_en_passant_target_for_two_square_first_move(piece.color, end);
+        return Vec::from([ Move::TwoSquarePawnMove(TwoSquarePawnMove::from_basic_move(&basic_move, en_passant_target)) ]);
+    } else {
+        return Vec::from([ Move::BasicMove(basic_move) ]);
+    }
 }
 
 
@@ -165,10 +227,6 @@ impl Board {
         return fen_state_from_board(self).to_fen();
     }
 
-    pub fn get_piece_map(&self) -> &FxHashMap<u8, Piece> {
-        return self.position.get_piece_map();
-    }
-
     pub fn get_legal_moves(&self) -> Vec<Move> {
         let king_square = self.find_king(self.state.to_move);
         let mut moves: Vec<Move> = Vec::new();
@@ -181,9 +239,47 @@ impl Board {
         for pin in pins {
             moves.extend(self.get_legal_moves_for_pinned_piece(&pin))
         }
-        BitboardSquares::from_board(self.get_pieces_to_move() ^ pinned_squares).for_each(|square| {
-            moves.extend(self.get_moves_for_piece(square))
+        self.position.get_all_masked_piece_squares_for_color(self.state.to_move, !pinned_squares).for_each(|loc| {
+            moves.extend(self.get_moves_for_piece_square(loc))
         });
+        moves.extend(self.get_castle_moves(self.state.to_move));
+        return moves;
+    }
+
+    pub fn get_legal_moves_threaded(&self, thread_pool: &mut QueuedThreadPool<Vec<Move>>) -> Vec<Move> {
+        let king_square = self.find_king(self.state.to_move);
+        let mut moves: Vec<Move> = Vec::new();
+        let checks_and_pins = self.get_checks_and_pins(&king_square, self.state.to_move);
+        let checks = checks_and_pins.attacks;
+        let pins = checks_and_pins.pins;
+        let pinned_squares = checks_and_pins.pinned;
+        if checks.len() > 1 { return self.get_legal_king_moves() }
+        if !checks.is_empty() { return self.get_legal_moves_from_check(checks.first().unwrap(), pinned_squares) }
+        let (tx, rx) = channel();
+        let mut counter = 0u8;
+        for pin in pins {
+            counter += 1;
+            let position = self.position;
+            let ep_target = self.state.en_passant_target;
+            thread_pool.enqueue(Job {
+                task: Box::new(move || { get_legal_moves_for_pinned_piece(position, pin, ep_target) }),
+                comm: tx.clone(),
+            });
+        }
+        self.position.get_all_masked_piece_squares_for_color(self.state.to_move, !pinned_squares).for_each(|loc| {
+            counter += 1;
+            let position = self.position;
+            let ep_target = self.state.en_passant_target;
+            thread_pool.enqueue(Job {
+                task: Box::new(move || { get_moves_for_piece_square(position, loc, ep_target) }),
+                comm: tx.clone(),
+            });
+        });
+        while counter > 1 {
+            let new_moves = rx.recv().unwrap();
+            moves.extend(new_moves);
+            counter -= 1;
+        }
         moves.extend(self.get_castle_moves(self.state.to_move));
         return moves;
     }
@@ -317,16 +413,20 @@ impl Board {
     }
 
     fn get_moves_for_piece(&self, square: u8) -> Vec<Move> {
-        let mut moves: Vec<Move> = Vec::new();
         let piece = self.position.piece_at(&square).unwrap();
+        return self.get_moves_for_piece_square( PieceSquare { square: square, piece: piece } )
+    }
+
+    fn get_moves_for_piece_square(&self, loc: PieceSquare) -> Vec<Move> {
+        let mut moves: Vec<Move> = Vec::new();
         let move_board = get_moves_for_piece(
-            square,
-            piece,
-            self.position.get_all_piece_locations(piece.color),
-            self.position.get_all_piece_locations(piece.color.swap()),
+            loc.square,
+            loc.piece,
+            self.position.get_all_piece_locations(loc.piece.color),
+            self.position.get_all_piece_locations(loc.piece.color.swap()),
             self.state.en_passant_target);
         BitboardSquares::from_board(move_board).for_each(|end_square| {
-            moves.extend(self.build_move(square, end_square, piece))
+            moves.extend(self.build_move(loc.square, end_square, loc.piece))
         });
         return moves;
     }
@@ -424,9 +524,9 @@ impl Board {
         return self.position.get_attacks_and_pins(*king_square, king_color);
     }
 
-    fn build_move(&self, start: u8, end: u8, piece: &Piece) -> Vec<Move> {
-        let capture = self.position.piece_at(&end).map(|p| *p);
-        let basic_move = BasicMove { piece: *piece, start: start, end: end, capture: capture };
+    fn build_move(&self, start: u8, end: u8, piece: Piece) -> Vec<Move> {
+        let capture = self.position.piece_at(&end).map(|p| p);
+        let basic_move = BasicMove { piece: piece, start: start, end: end, capture: capture };
         if piece.piece_type == PieceType::King && self.position.is_check(end, piece.color) {
             return Vec::new();
         }
@@ -435,7 +535,7 @@ impl Board {
             if self.position.en_passant_is_illegal(piece.color, start, end, capture_square) {
                 return Vec::new();
             } else {
-                let ep_capture = self.position.piece_at(&capture_square).map(|p| *p);
+                let ep_capture = self.position.piece_at(&capture_square).map(|p| p);
                 let mut ep_basic = basic_move.clone();
                 ep_basic.capture = ep_capture;
                 match ep_capture {

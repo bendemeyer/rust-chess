@@ -20,7 +20,8 @@ fn build_argument_parser() -> ArgumentParser {
         .add_positional_arg("count", false, false).unwrap();
 
     builder.add_subcommand("perft").unwrap()
-        .add_named_arg("depth", HashSet::from(["--engine-depth"]), true, false).unwrap();
+        .add_named_arg("depth", HashSet::from(["--engine-depth"]), true, false).unwrap()
+        .add_named_arg("threads", HashSet::from(["--threads"]), false, false).unwrap();
 
     builder.add_subcommand("move").unwrap();
 
@@ -216,20 +217,20 @@ impl Interface {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'size' should not have its own subcommands"),
             ParsedArgs::Arguments(a) => {
-                match a.get_arg("depth") {
-                    Some(arg) => {
-                        let depth: u8 = arg.parse().unwrap();
-                        let result = self.game.do_perft(depth);
-                        let table = Table::new(result.get_analysis()).with(Style::pseudo_clean());
-                        self.shell.output(&table.to_string());
-                        self.shell.output(&format!("Completed in {:?}", result.duration));
-                        self.shell.empty_line();
-                        self.shell.output(&format!("Starting Zobrist ID: {}", result.zobrist_start));
-                        self.shell.output(&format!("Ending Zobrist ID:   {}", result.zobrist_end));
-
-                    },
-                    None => self.shell.output("Missing required field: 'depth' (use '--engine-depth')")
-                }
+                let depth: u8 = match a.get_arg("depth") {
+                    Some(d) => d.parse().unwrap(),
+                    None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
+                };
+                let result = match a.get_arg("threads") {
+                    Some(t) => self.game.threaded_perft(depth, t.parse().unwrap()),
+                    None => self.game.perft(depth),
+                };
+                let table = Table::new(result.get_analysis()).with(Style::pseudo_clean());
+                self.shell.output(&table.to_string());
+                self.shell.output(&format!("Completed in {:?}", result.duration));
+                self.shell.empty_line();
+                self.shell.output(&format!("Starting Zobrist ID: {}", result.zobrist_start));
+                self.shell.output(&format!("Ending Zobrist ID:   {}", result.zobrist_end));
             }
         }
     }

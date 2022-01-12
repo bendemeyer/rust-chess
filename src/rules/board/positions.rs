@@ -6,7 +6,7 @@ use crate::rules::pieces::movement::{Move, SlideDirection, PawnMovement};
 use crate::rules::pieces::{Piece, movement::CastleType};
 use crate::util::errors::InputError;
 
-use super::bitboards::{get_bit_for_square, set_bit_at_square, unset_bit_at_square, get_diagonal_bitboard, get_ray_bitboard, BitboardSquares, get_knight_bitboard, get_pawn_bitboard, get_orthagonal_bitboard};
+use super::bitboards::{get_bit_for_square, set_bit_at_square, unset_bit_at_square, get_diagonal_bitboard, get_ray_bitboard, BitboardSquares, get_knight_bitboard, get_pawn_bitboard, get_orthagonal_bitboard, ColorBoard, PieceTypeBoard, PieceBoard, BitboardPieceLocations};
 use super::squares::BoardSquare;
 
 
@@ -56,7 +56,7 @@ pub struct Pin {
 }
 
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct CastlingSquares {
     pub king_start: u8,
     pub king_end: u8,
@@ -106,18 +106,34 @@ impl CastlingSquares {
 }
 
 
-#[derive(Clone, Default)]
+pub struct PieceBoardGenerator {
+    position: BoardPositions,
+    pieces: Vec<Piece>,
+    mask: u64,
+}
+
+impl Iterator for PieceBoardGenerator {
+    type Item = PieceBoard;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.pieces.pop() {
+            None => None,
+            Some(p) => Some(self.position.get_masked_piece_board(p.color, p.piece_type, self.mask))
+        }
+    }
+}
+
+
+#[derive(Copy, Clone, Default)]
 pub struct BoardPositions {
-    pub piece_map: FxHashMap<u8, Piece>,
     white_pieces: u64,
-    white_king: u64,
     black_pieces: u64,
-    black_king: u64,
     pawns: u64,
     knights: u64,
     bishops: u64,
     rooks: u64,
     queens: u64,
+    kings: u64,
 }
 
 impl BoardPositions {
@@ -128,19 +144,62 @@ impl BoardPositions {
         });
     }
 
-    pub fn get_piece_map(&self) -> &FxHashMap<u8, Piece> {
-        return &self.piece_map;
-    }
-
     pub fn find_king(&self, color: Color) -> u8 {
-        return match color {
-            Color::White => self.white_king.trailing_zeros() as u8,
-            Color::Black => self.black_king.trailing_zeros() as u8
-        }
+        return self.get_piece_locations(color, PieceType::King).trailing_zeros() as u8;
     }
 
-    pub fn piece_at(&self, square: &u8) -> Option<&Piece> {
-        return self.piece_map.get(square);
+    fn get_color_boards(&self) -> [ColorBoard; 2] {
+        return [
+            ColorBoard::from_board(self.white_pieces, Color::White),
+            ColorBoard::from_board(self.black_pieces, Color::Black),
+        ]
+    }
+
+    fn get_piece_type_boards(&self) -> [PieceTypeBoard; 6] {
+        return [
+            PieceTypeBoard::from_board(self.pawns,   PieceType::Pawn   ),
+            PieceTypeBoard::from_board(self.knights, PieceType::Knight ),
+            PieceTypeBoard::from_board(self.bishops, PieceType::Bishop ),
+            PieceTypeBoard::from_board(self.rooks,   PieceType::Rook   ),
+            PieceTypeBoard::from_board(self.queens,  PieceType::Queen  ),
+            PieceTypeBoard::from_board(self.kings,   PieceType::King   ),
+        ]
+    }
+
+    pub fn piece_at(&self, square: &u8) -> Option<Piece> {
+        let square_bit = get_bit_for_square(*square);
+        let color = match self.get_color_boards().into_iter().find(|cb| {
+            return square_bit & cb.get_board() > 0;
+        }) { Some(cb) => *cb.get_color(), None => return None };
+        let piece_type = match self.get_piece_type_boards().into_iter().find(|pb| {
+            return square_bit & pb.get_board() > 0;
+        }) { Some(pb) => *pb.get_piece_type(), None => return None };
+        return Some(Piece { color: color, piece_type: piece_type });
+    }
+
+    pub fn get_masked_piece_squares(&self, pieces: Vec<Piece>, mask: u64) -> BitboardPieceLocations<PieceBoardGenerator> {
+        return BitboardPieceLocations::from_iter(PieceBoardGenerator {
+            position: *self,
+            mask: mask,
+            pieces: pieces,
+        });
+    }
+
+    pub fn get_all_masked_piece_squares_for_color(&self, color: Color, mask: u64) -> BitboardPieceLocations<PieceBoardGenerator> {
+        return self.get_masked_piece_squares(Vec::from([
+            Piece { color: color, piece_type: PieceType::Pawn   },
+            Piece { color: color, piece_type: PieceType::Knight },
+            Piece { color: color, piece_type: PieceType::Bishop },
+            Piece { color: color, piece_type: PieceType::Rook   },
+            Piece { color: color, piece_type: PieceType::Queen  },
+            Piece { color: color, piece_type: PieceType::King   },
+        ]), mask);
+    }
+
+    pub fn get_masked_piece_board(&self, color: Color, piece_type: PieceType, mask: u64) -> PieceBoard {
+        return PieceBoard::from_board(
+            self.get_piece_locations(color, piece_type) & mask,
+            Piece { color: color, piece_type: piece_type });
     }
 
     pub fn get_piece_locations(&self, color: Color, piece_type: PieceType) -> u64 {
@@ -151,12 +210,7 @@ impl BoardPositions {
             PieceType::Bishop => self.bishops,
             PieceType::Rook => self.rooks,
             PieceType::Queen => self.queens,
-            PieceType::King => {
-                match color {
-                    Color::White => return self.white_king,
-                    Color::Black => return self.black_king,
-                }
-            }
+            PieceType::King => self.kings,
         };
         return color_board & piece_board;
     }
@@ -176,6 +230,10 @@ impl BoardPositions {
     }
 
     fn insert_piece(&mut self, square: u8, piece: Piece) {
+        self.insert_piece_into_boards(square, piece);
+    }
+
+    fn insert_piece_into_boards(&mut self, square:u8, piece: Piece) {
         match piece.color {
             Color::White => self.white_pieces = set_bit_at_square(self.white_pieces, square),
             Color::Black => self.black_pieces = set_bit_at_square(self.black_pieces, square),
@@ -186,38 +244,34 @@ impl BoardPositions {
             PieceType::Bishop => self.bishops = set_bit_at_square(self.bishops, square),
             PieceType::Rook   => self.rooks   = set_bit_at_square(self.rooks, square),
             PieceType::Queen  => self.queens  = set_bit_at_square(self.queens, square),
-            PieceType::King   => {
-                match piece.color {
-                    Color::White => self.white_king = get_bit_for_square(square),
-                    Color::Black => self.black_king = get_bit_for_square(square),
-                }
-            }
+            PieceType::King   => self.kings   = set_bit_at_square(self.kings, square),
         }
-        self.piece_map.insert(square, piece);
     }
 
     fn try_remove_piece(&mut self, square: u8) -> Option<Piece> {
-        match self.piece_map.remove(&square) {
-            Some(p) => {
-                match p.color {
-                    Color::White => self.white_pieces = unset_bit_at_square(self.white_pieces, square),
-                    Color::Black => self.black_pieces = unset_bit_at_square(self.black_pieces, square),
-                }
-                match p.piece_type {
-                    PieceType::Pawn   => self.pawns   = unset_bit_at_square(self.pawns, square),
-                    PieceType::Knight => self.knights = unset_bit_at_square(self.knights, square),
-                    PieceType::Bishop => self.bishops = unset_bit_at_square(self.bishops, square),
-                    PieceType::Rook   => self.rooks   = unset_bit_at_square(self.rooks, square),
-                    PieceType::Queen  => self.queens  = unset_bit_at_square(self.queens, square),
-                    PieceType::King   => (),
-                }
-                Some(p)
-            }
-            None => None
+        let piece = self.piece_at(&square);
+        if let Some(p) = piece {
+            self.remove_piece_from_boards(square, p);
+        }
+        return piece;
+    }
+
+    fn remove_piece_from_boards(&mut self, square: u8, piece: Piece) {
+        match piece.color {
+            Color::White => self.white_pieces = unset_bit_at_square(self.white_pieces, square),
+            Color::Black => self.black_pieces = unset_bit_at_square(self.black_pieces, square),
+        }
+        match piece.piece_type {
+            PieceType::Pawn   => self.pawns   = unset_bit_at_square(self.pawns, square),
+            PieceType::Knight => self.knights = unset_bit_at_square(self.knights, square),
+            PieceType::Bishop => self.bishops = unset_bit_at_square(self.bishops, square),
+            PieceType::Rook   => self.rooks   = unset_bit_at_square(self.rooks, square),
+            PieceType::Queen  => self.queens  = unset_bit_at_square(self.queens, square),
+            PieceType::King   => self.kings   = unset_bit_at_square(self.kings, square),
         }
     }
 
-    fn move_piece(&mut self, start: u8, end: u8) -> Result<&Piece, InputError> {
+    fn move_piece(&mut self, start: u8, end: u8) -> Result<Piece, InputError> {
         match self.try_remove_piece(start) {
             None => return Err(InputError::new(&format!("No piece to move at square {}", start))),
             Some(p) => self.insert_piece(end, p)
@@ -225,7 +279,7 @@ impl BoardPositions {
         return Ok(self.piece_at(&end).unwrap())
     }
 
-    pub fn apply_move(&mut self, new_move: &Move) -> Result<(&Piece, Option<Piece>), InputError> {
+    pub fn apply_move(&mut self, new_move: &Move) -> Result<(Piece, Option<Piece>), InputError> {
         match new_move {
             Move::TwoSquarePawnMove(t) => {
                 match self.move_piece(t.basic_move.start, t.basic_move.end) {

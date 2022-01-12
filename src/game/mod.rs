@@ -35,9 +35,15 @@ impl Game {
         self.move_history.push(*new_move);
     }
 
-    pub fn do_perft(&mut self, depth: u8) -> Perft {
+    pub fn perft(&mut self, depth: u8) -> Perft {
         let mut perft: Perft = Default::default();
         Engine::do_perft(self.board.clone(), depth, &mut perft);
+        return perft;
+    }
+
+    pub fn threaded_perft(&mut self, depth: u8, threads: u8) -> Perft {
+        let mut perft: Perft = Default::default();
+        Engine::do_threaded_perft(self.board.clone(), depth, threads, &mut perft);
         return perft;
     }
 
@@ -45,7 +51,7 @@ impl Game {
         return self.board.get_legal_moves();
     }
 
-    pub fn get_piece_at(&self, square: u8) -> Option<&Piece> {
+    pub fn get_piece_at(&self, square: u8) -> Option<Piece> {
         return self.board.position.piece_at(&square);
     }
 

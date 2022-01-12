@@ -1,4 +1,69 @@
-use std::{collections::VecDeque, thread::{self, JoinHandle}, sync::{Mutex, Arc}};
+use std::{collections::VecDeque, thread::{self, JoinHandle}, sync::{Mutex, Arc, mpsc::Sender, RwLock}, time::Duration};
+
+
+pub struct Job<T: Send + 'static> {
+    pub task: Box<dyn FnOnce() -> T + Send>,
+    pub comm: Sender<T>
+}
+
+impl<T: Send + 'static> Job<T> {
+    pub fn run(self) {
+        self.comm.send((self.task)()).unwrap();
+    }
+}
+
+
+pub struct QueuedThreadPool<T: Send + 'static> {
+    queue: Arc<Mutex<VecDeque<Job<T>>>>,
+    handles: Vec<JoinHandle<()>>,
+    terminated: Arc<RwLock<bool>>,
+}
+
+impl<T: Send + 'static> QueuedThreadPool<T> {
+    pub fn new() -> Self {
+        return Self {
+            queue: Arc::new(Mutex::new(VecDeque::new())),
+            handles: Vec::new(),
+            terminated: Arc::new(RwLock::new(false)),
+        }
+    }
+
+    pub fn enqueue(&mut self, job: Job<T>) {
+        self.queue.lock().unwrap().push_back(job);
+    }
+
+    pub fn enqueue_many<I>(&mut self, jobs: I) where I: Iterator<Item=Job<T>> {
+        self.queue.lock().unwrap().extend(jobs);
+    }
+
+    fn start_worker(&mut self) -> JoinHandle<()> {
+        let queue = Arc::clone(&self.queue);
+        let terminated = Arc::clone(&self.terminated);
+        return thread::spawn(move || {
+            loop {
+                let job = queue.lock().unwrap().pop_front();
+                match job {
+                    Some(j) => { j.run(); },
+                    None => {
+                        if *terminated.read().unwrap() { break; }
+                        thread::sleep(Duration::from_millis(10))
+                    },
+                }
+            }
+        })
+    }
+
+    pub fn init(&mut self, pool_size: u8) {
+        self.handles = (0..pool_size).map(|_| {
+            self.start_worker()
+        }).collect();
+    }
+
+    pub fn join(self) {
+        *self.terminated.write().unwrap() = true;
+        self.handles.into_iter().for_each(|h| h.join().unwrap());
+    }
+}
 
 
 pub struct ThreadPool<F: Send + 'static, T: Send + 'static> where F: FnOnce() -> T {

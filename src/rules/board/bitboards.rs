@@ -46,6 +46,106 @@ impl Iterator for BitboardSquares {
 }
 
 
+pub struct QualifiedBoard<T> {
+    board: BitboardSquares,
+    qualifier: T,
+}
+
+impl<T> QualifiedBoard<T> {
+    pub fn from_board(board: u64, qualifier: T) -> Self {
+        Self {
+            board: BitboardSquares::from_board(board),
+            qualifier: qualifier,
+        }
+    }
+
+    pub fn get_board(&self) -> u64 {
+        return self.board.board;
+    }
+
+    pub fn get_qualifier(&self) -> &T {
+        return &self.qualifier;
+    }
+}
+
+impl<T> Iterator for QualifiedBoard<T> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        return self.board.next();
+    }
+}
+
+pub type ColorBoard = QualifiedBoard<Color>;
+
+impl ColorBoard {
+    pub fn get_color(&self) -> &Color {
+        return self.get_qualifier();
+    }
+}
+
+pub type PieceTypeBoard = QualifiedBoard<PieceType>;
+
+impl PieceTypeBoard {
+    pub fn get_piece_type(&self) -> &PieceType {
+        return self.get_qualifier();
+    }
+}
+
+pub type PieceBoard = QualifiedBoard<Piece>;
+
+impl PieceBoard {
+    pub fn get_piece(&self) -> &Piece {
+        return self.get_qualifier();
+    }
+}
+
+
+pub struct PieceSquare {
+    pub square: u8,
+    pub piece: Piece,
+}
+
+pub struct BitboardPieceLocations<I> where I: Iterator<Item=PieceBoard> {
+    board: Option<PieceBoard>,
+    boards: I,
+}
+
+impl<I> BitboardPieceLocations<I> where I: Iterator<Item=PieceBoard> {
+    pub fn from_iter(boards: I) -> Self {
+        let mut result = Self {
+            board: None,
+            boards: boards,
+        };
+        result.prepare_next_board();
+        return result;
+    }
+
+    fn prepare_next_board(&mut self) {
+        self.board = self.boards.next();
+    }
+}
+
+impl<I> Iterator for BitboardPieceLocations<I> where I: Iterator<Item=PieceBoard> {
+    type Item = PieceSquare;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.board.as_mut() {
+            None => None,
+            Some(pb) => {
+                match pb.next() {
+                    Some(square) => Some(PieceSquare { square: square, piece: *pb.get_piece() }),
+                    None => {
+                        self.prepare_next_board();
+                        self.next()
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 pub fn get_bit_for_square(square: u8) -> u64 {
     return 2u64.pow(square as u32)
 }
@@ -302,7 +402,7 @@ fn get_moves_for_king(square: u8, friendlies: u64) -> u64 {
 }
 
 
-pub fn get_moves_for_piece(square: u8, piece: &Piece, friendlies: u64, enemies: u64, en_passant_target: u64) -> u64 {
+pub fn get_moves_for_piece(square: u8, piece: Piece, friendlies: u64, enemies: u64, en_passant_target: u64) -> u64 {
     match piece.piece_type {
         PieceType::Pawn   => get_moves_for_pawn(square, friendlies, enemies, piece.color, en_passant_target),
         PieceType::Knight => get_moves_for_knight(square, friendlies),

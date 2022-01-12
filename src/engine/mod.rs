@@ -2,7 +2,7 @@ use std::{sync::{Mutex, Arc}, time::{Duration, Instant}, cmp::Ordering};
 
 use tabled::Tabled;
 
-use crate::{rules::{board::Board, pieces::movement::{Move, NewGame}, Color}, util::{zobrist::ZobristHashMap, concurrency::{WorkQueue, ThreadPool}}};
+use crate::{rules::{board::Board, pieces::movement::{Move, NewGame}, Color}, util::{zobrist::ZobristHashMap, concurrency::{WorkQueue, ThreadPool, QueuedThreadPool}}};
 
 use self::{scores::{best_score, is_better}, evaluation::evaluate_board};
 
@@ -219,12 +219,47 @@ pub struct Engine;
 
 impl Engine {
 
+    pub fn do_threaded_perft(mut board: Board, depth: u8, threads: u8, perft: &mut Perft) {
+        let mut thread_pool: QueuedThreadPool<Vec<Move>> = QueuedThreadPool::new();
+        thread_pool.init(threads);
+        perft.zobrist_start = board.id;
+        perft.start();
+        Self::threaded_perft(&mut board, 0, depth, perft, &mut thread_pool);
+        perft.complete();
+        thread_pool.join();
+        perft.zobrist_end = board.id;
+    }
+
     pub fn do_perft(mut board: Board, depth: u8, perft: &mut Perft) {
         perft.zobrist_start = board.id;
         perft.start();
         Self::perft(&mut board, 0, depth, perft);
         perft.complete();
         perft.zobrist_end = board.id;
+    }
+
+    fn threaded_perft(board: &mut Board, depth: u8, max_depth: u8, perft: &mut Perft, thread_pool: &mut QueuedThreadPool<Vec<Move>>) {
+        perft.increment_size(depth);
+        if depth >= max_depth {
+            return;
+        }
+        let moves = board.get_legal_moves_threaded(thread_pool);
+        for new_move in moves {
+            match new_move.get_capture() {
+                Some(_) => perft.increment_captures(depth + 1),
+                None => ()
+            }
+            match new_move {
+                Move::EnPassant(_) => perft.increment_en_passants(depth + 1),
+                Move::Promotion(_) => perft.increment_promotions(depth + 1),
+                Move::Castle(_) => perft.increment_castles(depth + 1),
+                _ => (),
+            }
+            let change = board.make_move(&new_move);
+            if board.in_check() { perft.increment_checks(depth + 1); }
+            Self::perft(board, depth + 1, max_depth, perft);
+            board.unmake_move(change);
+        }
     }
 
     fn perft(board: &mut Board, depth: u8, max_depth: u8, perft: &mut Perft) {
