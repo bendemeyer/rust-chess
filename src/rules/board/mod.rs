@@ -11,12 +11,12 @@ use fxhash::FxHashMap;
 use crate::rules::board::positions::CastlingSquares;
 use crate::util::concurrency::{QueuedThreadPool, Job};
 use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION};
-use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_gain_castle_right, zobrist_update_add_en_passant_target, zobrist_update_unapply_move};
+use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_add_en_passant_target};
 
 use self::bitboards::{BitboardSquares, get_bit_for_square, get_moves_for_piece, PieceSquare};
 use self::positions::{BoardPositions, Pin, AttacksAndPins, Attack};
 use self::squares::{BoardSquare, get_col_and_row_from_square, get_square_from_col_and_row, is_fourth_rank, is_eighth_rank, is_second_rank};
-use self::state::{CastleRight, BoardState, BoardCastles, ReversibleBoardChange};
+use self::state::{CastleRight, BoardState, BoardCastles, ReversibleBoardChange, ApplyableBoardChange};
 
 use super::Color;
 use super::pieces::{Piece, PieceType};
@@ -34,6 +34,26 @@ lazy_static! {
             (CastleType::Queenside, CastlingSquares::from_color_and_type(Color::Black, CastleType::Queenside))
         ].into_iter())),
     ].into_iter());
+}
+
+
+impl CastleRight {
+    fn associated_rights_by_square(square: u8) -> Vec<Self> {
+        let mut rights = Vec::new();
+        if square == BoardSquare::A1.value() || square == BoardSquare::E1.value() {
+            rights.push(Self { color: Color::White, side: CastleType::Queenside });
+        }
+        if square == BoardSquare::H1.value() || square == BoardSquare::E1.value() {
+            rights.push(Self { color: Color::White, side: CastleType::Kingside });
+        }
+        if square == BoardSquare::A8.value() || square == BoardSquare::E8.value() {
+            rights.push(Self { color: Color::Black, side: CastleType::Queenside });
+        }
+        if square == BoardSquare::H8.value() || square == BoardSquare::E8.value() {
+            rights.push(Self { color: Color::Black, side: CastleType::Kingside });
+        }
+        return rights;
+    }
 }
 
 
@@ -119,6 +139,10 @@ fn board_from_fen_state(state: FenBoardState) -> Board {
             }
         },
         id: zobrist_id_from_fen_state(&state),
+        checks: Vec::new(),
+        pins: Vec::new(),
+        pinned: 0u64,
+        responses: Vec::new(),
     }
 }
 
@@ -147,7 +171,37 @@ fn get_castle_details(color: Color, castle_type: CastleType) -> &'static Castlin
 }
 
 
-fn get_legal_moves_for_pinned_piece(position: BoardPositions, pin: Pin, ep_target: u64) -> Vec<Move> {
+fn get_legal_king_moves(position: &BoardPositions, color: Color) -> Vec<Move> {
+    let king_square = position.find_king(color);
+    return get_moves_for_piece_square(position, &PieceSquare{square: king_square, piece: Piece { color: color, piece_type: PieceType::King }}, 0u64);
+}
+
+fn get_legal_moves_from_check(position: &BoardPositions, color: Color, check: &Attack, pinned: u64, ep_target: u64) -> Vec<Move> {
+    let mut moves = get_legal_king_moves(position, color);
+    for loc in position.get_all_masked_piece_squares_for_color(color, !pinned) {
+        if loc.piece.piece_type == PieceType::King { continue };
+        let move_board = get_moves_for_piece(
+            loc.square,
+            loc.piece,
+            position.get_all_piece_locations(color),
+            position.get_all_piece_locations(color.swap()),
+            ep_target);
+        let legal_moves = move_board & (check.attack_path | get_bit_for_square(check.attacking_square));
+        for end_square in BitboardSquares::from_board(legal_moves) {
+            moves.extend(build_move(position, loc.square, end_square, &loc.piece, ep_target));
+        }
+        if loc.piece.piece_type == PieceType::Pawn && move_board & ep_target != 0 {
+            let end = ep_target.trailing_zeros() as u8;
+            let capture_square = get_capture_square_for_ep_target(end);
+            if capture_square == check.attacking_square && move_board & get_bit_for_square(end) != 0 {
+                moves.extend(build_move(position, loc.square, end, &loc.piece, ep_target))
+            }
+        }
+    }
+    return moves;
+}
+
+fn get_legal_moves_for_pinned_piece(position: &BoardPositions, pin: &Pin, ep_target: u64) -> Vec<Move> {
     let pinned_piece = position.piece_at(&pin.pinned_square).unwrap();
     let move_board = get_moves_for_piece(
         pin.pinned_square,
@@ -157,12 +211,12 @@ fn get_legal_moves_for_pinned_piece(position: BoardPositions, pin: Pin, ep_targe
         ep_target);
     let legal_moves = move_board & (pin.pin_path | get_bit_for_square(pin.pinning_square));
     BitboardSquares::from_board(legal_moves).fold(Vec::new(), |mut moves, s| {
-        moves.extend(build_move(position, pin.pinned_square, s, pinned_piece, ep_target));
+        moves.extend(build_move(position, pin.pinned_square, s, &pinned_piece, ep_target));
         moves
     })
 }
 
-fn get_moves_for_piece_square(position: BoardPositions, loc: PieceSquare, ep_target: u64) -> Vec<Move> {
+fn get_moves_for_piece_square(position: &BoardPositions, loc: &PieceSquare, ep_target: u64) -> Vec<Move> {
     let move_board = get_moves_for_piece(
         loc.square,
         loc.piece,
@@ -170,14 +224,14 @@ fn get_moves_for_piece_square(position: BoardPositions, loc: PieceSquare, ep_tar
         position.get_all_piece_locations(loc.piece.color.swap()),
         ep_target);
     BitboardSquares::from_board(move_board).fold(Vec::new(), |mut moves, s| {
-        moves.extend(build_move(position, loc.square, s, loc.piece, ep_target));
+        moves.extend(build_move(position, loc.square, s, &loc.piece, ep_target));
         moves
     })
 }
 
-fn build_move(position: BoardPositions, start: u8, end: u8, piece: Piece, ep_target: u64) -> Vec<Move> {
+fn build_move(position: &BoardPositions, start: u8, end: u8, piece: &Piece, ep_target: u64) -> Vec<Move> {
     let capture = position.piece_at(&end).map(|p| p);
-    let basic_move = BasicMove { piece: piece, start: start, end: end, capture: capture };
+    let basic_move = BasicMove { piece: *piece, start: start, end: end, capture: capture };
     if piece.piece_type == PieceType::King && position.is_check(end, piece.color) {
         return Vec::new();
     }
@@ -206,11 +260,95 @@ fn build_move(position: BoardPositions, start: u8, end: u8, piece: Piece, ep_tar
 }
 
 
+fn predict_lost_castle_rights(mov: &Move, state: &BoardState) -> Vec<CastleRight> {
+    let mut rights = Vec::new();
+    for movement in mov.get_piece_movements() {
+        rights.extend(CastleRight::associated_rights_by_square(movement.start_square));
+        rights.extend(CastleRight::associated_rights_by_square(movement.end_square));
+    }
+    return rights.into_iter().filter(|r| state.can_castle(r)).collect();
+}
+
+
+fn predict_zobrist_update(old_id: u64, mov: &Move, revoked_castle_rights: &Vec<CastleRight>, state: &BoardState) -> u64 {
+    let mut hash = old_id;
+    hash = zobrist_update_apply_move(hash, &mov);
+    for right in revoked_castle_rights {
+        hash = zobrist_update_lose_castle_right(hash, right.color, right.side);
+    }
+    if let Some(ep) = state.get_en_passant_target() {
+        hash = zobrist_update_remove_en_passant_target(hash, ep);
+    }
+    if let Move::TwoSquarePawnMove(m) = mov {
+        hash = zobrist_update_add_en_passant_target(hash, m.en_passant_target);
+    }
+    hash = zobrist_update_turn(hash, state.to_move.swap());
+    return hash;
+}
+
+
+fn prepare_change(mov: Move, position: &BoardPositions, state: &BoardState, board_id: u64) -> ApplyableBoardChange {
+    let mut updated_position = *position;
+    let mut updated_state = *state;
+    updated_position.apply_move(&mov);
+    let checks_and_pins = updated_position.get_attacks_and_pins(
+        updated_position.find_king(updated_state.get_move_color().swap()),
+        updated_state.get_move_color().swap());
+    let revoked_castle_rights = predict_lost_castle_rights(&mov, &updated_state);
+    for right in &revoked_castle_rights {
+        updated_state.revoke_castle_right(right);
+    }
+    if let Move::TwoSquarePawnMove(m) = mov {
+        updated_state.set_en_passant_target(m.en_passant_target);
+    } else {
+        updated_state.clear_en_passant_target();
+    }
+    updated_state.increment_halfmove_clock();
+    if let Some(_capture) = mov.get_capture() {
+        updated_state.reset_halfmove_clock();
+    } else if mov.get_piece_movements()[0].get_piece().piece_type == PieceType::Pawn {
+        updated_state.reset_halfmove_clock();
+    }
+    if updated_state.get_move_color() == Color::Black { updated_state.increment_move_number(); }
+    updated_state.change_move_color();
+
+    let updated_zobrist_id = predict_zobrist_update(board_id, &mov, &revoked_castle_rights, &updated_state);
+
+    let responses: Vec<ApplyableBoardChange> = (if checks_and_pins.attacks.len() > 1 {
+        get_legal_king_moves(&updated_position, updated_state.get_move_color())
+    } else if !checks_and_pins.attacks.is_empty() {
+        get_legal_moves_from_check(
+            &updated_position,
+            updated_state.get_move_color(),
+            &checks_and_pins.attacks[0],
+            checks_and_pins.pinned,
+            updated_state.en_passant_target)
+    } else {
+        Vec::new()
+    }).into_iter().map(|m| { prepare_change(m, &updated_position, &updated_state, updated_zobrist_id) }).collect();
+
+    return ApplyableBoardChange {
+        new_move: mov,
+        checks: checks_and_pins.attacks,
+        absolute_pins: checks_and_pins.pins,
+        pinned_pieces: checks_and_pins.pinned,
+        responses: responses,
+        new_zobrist_id: updated_zobrist_id,
+        new_position: updated_position,
+        new_state: updated_state,
+    }
+}
+
+
 #[derive(Clone)]
 pub struct Board {
     pub position: BoardPositions,
     pub state: BoardState,
     pub id: u64,
+    checks: Vec<Attack>,
+    pins: Vec<Pin>,
+    pinned: u64,
+    responses: Vec<ApplyableBoardChange>,
 }
 
 impl Board {
@@ -246,54 +384,72 @@ impl Board {
         return moves;
     }
 
-    pub fn get_legal_moves_threaded(&self, thread_pool: &mut QueuedThreadPool<Vec<Move>>) -> Vec<Move> {
-        let king_square = self.find_king(self.state.to_move);
-        let mut moves: Vec<Move> = Vec::new();
-        let checks_and_pins = self.get_checks_and_pins(&king_square, self.state.to_move);
-        let checks = checks_and_pins.attacks;
-        let pins = checks_and_pins.pins;
-        let pinned_squares = checks_and_pins.pinned;
-        if checks.len() > 1 { return self.get_legal_king_moves() }
-        if !checks.is_empty() { return self.get_legal_moves_from_check(checks.first().unwrap(), pinned_squares) }
+    pub fn get_legal_moves_threaded(&self, thread_pool: &mut QueuedThreadPool<Vec<ApplyableBoardChange>>) -> Vec<ApplyableBoardChange> {
+        let mut moves: Vec<ApplyableBoardChange> = Vec::new();
+        if !self.responses.is_empty() {
+            return self.responses.clone();
+        }
+        let pins = &self.pins;
         let (tx, rx) = channel();
-        let mut counter = 0u8;
         for pin in pins {
-            counter += 1;
             let position = self.position;
+            let owned_pin = *pin;
+            let state = self.state;
+            let id = self.id;
             let ep_target = self.state.en_passant_target;
             thread_pool.enqueue(Job {
-                task: Box::new(move || { get_legal_moves_for_pinned_piece(position, pin, ep_target) }),
+                task: Box::new(move || { get_legal_moves_for_pinned_piece(&position, &owned_pin, ep_target).into_iter().map(|m| {
+                    prepare_change(m, &position, &state, id)
+                }).collect() }),
                 comm: tx.clone(),
             });
         }
-        self.position.get_all_masked_piece_squares_for_color(self.state.to_move, !pinned_squares).for_each(|loc| {
-            counter += 1;
+        self.position.get_all_masked_piece_squares_for_color(self.state.to_move, !self.pinned).for_each(|loc| {
             let position = self.position;
+            let state = self.state;
+            let id = self.id;
             let ep_target = self.state.en_passant_target;
             thread_pool.enqueue(Job {
-                task: Box::new(move || { get_moves_for_piece_square(position, loc, ep_target) }),
+                task: Box::new(move || { get_moves_for_piece_square(&position, &loc, ep_target).into_iter().map(|m| {
+                    prepare_change(m, &position, &state, id)
+                }).collect() }),
                 comm: tx.clone(),
             });
         });
-        while counter > 1 {
-            let new_moves = rx.recv().unwrap();
+        drop(tx);
+        while let Ok(new_moves) = rx.recv() {
             moves.extend(new_moves);
-            counter -= 1;
         }
-        moves.extend(self.get_castle_moves(self.state.to_move));
+        moves.extend(self.get_castle_moves(self.state.to_move).into_iter().map(|m| {
+            prepare_change(m, &self.position, &self.state, self.id)
+        }));
         return moves;
+    }
+
+    pub fn apply_change(&mut self, change: ApplyableBoardChange) -> ReversibleBoardChange {
+        let result = ReversibleBoardChange {
+            prior_zobrist_id: self.id,
+            prior_position: self.position,
+            prior_state: self.state,
+        };
+        self.id = change.new_zobrist_id;
+        self.state = change.new_state;
+        self.position = change.new_position;
+        self.checks = change.checks;
+        self.pins = change.absolute_pins;
+        self.pinned = change.pinned_pieces;
+        self.responses = change.responses;
+        return result;
     }
 
     pub fn make_move(&mut self, new_move: &Move) -> ReversibleBoardChange {
         let result = ReversibleBoardChange {
-            move_made: *new_move,
-            revoked_castle_rights: self.revoke_castle_rights(new_move),
-            prior_en_passant_target: self.state.en_passant_target,
-            prior_halfmove_clock: self.state.halfmove_clock,
-            prior_move_number: self.state.move_number,
+            prior_zobrist_id: self.id,
+            prior_position: self.position,
+            prior_state: self.state,
         };
         self.id = zobrist_update_apply_move(self.id, new_move);
-        for castle in &result.revoked_castle_rights {
+        for castle in self.revoke_castle_rights(new_move) {
             self.id = zobrist_update_lose_castle_right(self.id, castle.color, castle.side);
         }
         match self.state.clear_en_passant_target() {
@@ -301,13 +457,12 @@ impl Board {
             None => (),
         }
         self.state.increment_halfmove_clock();
-        match self.position.apply_move(new_move) {
-            Err(e) => panic!("{}", e.msg),
-            Ok((piece, cap)) => {
-                if piece.piece_type == PieceType::Pawn { self.state.reset_halfmove_clock() }
-                match cap { Some(_) => self.state.reset_halfmove_clock(), None => () }
-            }
+        if let Some(_capture) = new_move.get_capture() {
+            self.state.reset_halfmove_clock();
+        } else if new_move.get_piece_movements()[0].get_piece().piece_type == PieceType::Pawn {
+            self.state.reset_halfmove_clock();
         }
+        self.position.apply_move(new_move);
         
         match new_move {
             Move::TwoSquarePawnMove(m) => {
@@ -325,32 +480,9 @@ impl Board {
     }
 
     pub fn unmake_move(&mut self, change: ReversibleBoardChange) {
-        self.state.halfmove_clock = change.prior_halfmove_clock;
-        self.state.move_number = change.prior_move_number;
-
-        match self.state.get_en_passant_target() {
-            Some(square) => self.id = zobrist_update_remove_en_passant_target(self.id, square),
-            None => ()
-        }
-        self.state.en_passant_target = change.prior_en_passant_target;
-        match self.state.get_en_passant_target() {
-            Some(square) => self.id = zobrist_update_add_en_passant_target(self.id, square),
-            None => ()
-        }
-
-        for castle in &change.revoked_castle_rights {
-            self.state.return_castle_right(castle);
-            self.id = zobrist_update_gain_castle_right(self.id, castle.color, castle.side)
-        }
-
-        self.id = zobrist_update_unapply_move(self.id, &change.move_made);
-
-        match self.position.unapply_move(&change.move_made) {
-            Err(e) => panic!("{}", e.msg),
-            Ok(_) => ()
-        }
-        self.state.change_move_color();
-        self.id = zobrist_update_turn(self.id, self.state.get_move_color());
+        self.id = change.prior_zobrist_id;
+        self.position = change.prior_position;
+        self.state = change.prior_state;
     }
 
     fn revoke_castle_rights(&mut self, new_move: &Move) -> Vec<CastleRight> {

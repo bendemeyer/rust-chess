@@ -1,27 +1,31 @@
-use crate::rules::{Color, pieces::movement::{Move, CastleType}};
+use crate::rules::{Color, pieces::movement::{CastleType, Move}};
 
-use super::{bitboards::get_bit_for_square, positions::{Attack, Pin}};
-
-
-pub struct ReversibleBoardChange {
-    pub move_made: Move,
-    pub revoked_castle_rights: Vec<CastleRight>,
-    pub prior_en_passant_target: u64,
-    pub prior_halfmove_clock: u8,
-    pub prior_move_number: u8,
-}
+use super::{bitboards::get_bit_for_square, positions::{Attack, Pin, BoardPositions}};
 
 
-pub struct BoardChange {
+#[derive(Clone)]
+pub struct ApplyableBoardChange {
     pub new_move: Move,
-    checks: Vec<Attack>,
-    absolute_pins: Vec<Pin>,
-    responses: Vec<Move>,
-    revoked_castle_rights: Vec<CastleRight>,
-
+    pub checks: Vec<Attack>,
+    pub absolute_pins: Vec<Pin>,
+    pub pinned_pieces: u64,
+    pub responses: Vec<ApplyableBoardChange>,
+    pub new_zobrist_id: u64,
+    pub new_position: BoardPositions,
+    pub new_state: BoardState,
 }
 
 
+#[derive(Copy, Clone)]
+pub struct ReversibleBoardChange {
+    pub prior_zobrist_id: u64,
+    pub prior_position: BoardPositions,
+    pub prior_state: BoardState,
+    
+}
+
+
+#[derive(Copy, Clone)]
 pub struct CastleRight {
     pub color: Color,
     pub side: CastleType,
@@ -34,6 +38,26 @@ pub struct BoardCastles {
     pub white_queenside: bool,
     pub black_kingside: bool,
     pub black_queenside: bool,
+}
+
+impl BoardCastles {
+    pub fn revoke_right(&mut self, right: CastleRight) {
+        match (right.color, right.side) {
+            (Color::White, CastleType::Kingside)  => self.white_kingside  = false,
+            (Color::White, CastleType::Queenside) => self.white_queenside = false,
+            (Color::Black, CastleType::Kingside)  => self.black_kingside  = false,
+            (Color::Black, CastleType::Queenside) => self.black_queenside = false,
+        }
+    }
+
+    pub fn can_castle(&self, right: CastleRight) -> bool {
+        match (right.color, right.side) {
+            (Color::White, CastleType::Kingside)  => self.white_kingside,
+            (Color::White, CastleType::Queenside) => self.white_queenside,
+            (Color::Black, CastleType::Kingside)  => self.black_kingside,
+            (Color::Black, CastleType::Queenside) => self.black_queenside,
+        }
+    }
 }
 
 impl Default for BoardCastles {

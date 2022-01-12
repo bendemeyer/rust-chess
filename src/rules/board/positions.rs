@@ -4,13 +4,12 @@ use crate::rules::Color;
 use crate::rules::pieces::PieceType;
 use crate::rules::pieces::movement::{Move, SlideDirection, PawnMovement};
 use crate::rules::pieces::{Piece, movement::CastleType};
-use crate::util::errors::InputError;
 
 use super::bitboards::{get_bit_for_square, set_bit_at_square, unset_bit_at_square, get_diagonal_bitboard, get_ray_bitboard, BitboardSquares, get_knight_bitboard, get_pawn_bitboard, get_orthagonal_bitboard, ColorBoard, PieceTypeBoard, PieceBoard, BitboardPieceLocations};
 use super::squares::BoardSquare;
 
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AttacksAndPins {
     pub target: u8,
     pub attacks: Vec<Attack>,
@@ -38,17 +37,19 @@ impl AttacksAndPins {
 }
 
 
+#[derive(Copy, Clone)]
 pub enum AttackOrPin {
     Attack(Attack),
     Pin(Pin),
 }
 
-
+#[derive(Copy, Clone)]
 pub struct Attack {
     pub attacking_square: u8,
     pub attack_path: u64,
 }
 
+#[derive(Copy, Clone)]
 pub struct Pin {
     pub pinning_square: u8,
     pub pinned_square: u8,
@@ -248,12 +249,8 @@ impl BoardPositions {
         }
     }
 
-    fn try_remove_piece(&mut self, square: u8) -> Option<Piece> {
-        let piece = self.piece_at(&square);
-        if let Some(p) = piece {
-            self.remove_piece_from_boards(square, p);
-        }
-        return piece;
+    fn remove_piece(&mut self, square: u8, piece: Piece) {
+        self.remove_piece_from_boards(square, piece);
     }
 
     fn remove_piece_from_boards(&mut self, square: u8, piece: Piece) {
@@ -271,94 +268,37 @@ impl BoardPositions {
         }
     }
 
-    fn move_piece(&mut self, start: u8, end: u8) -> Result<Piece, InputError> {
-        match self.try_remove_piece(start) {
-            None => return Err(InputError::new(&format!("No piece to move at square {}", start))),
-            Some(p) => self.insert_piece(end, p)
-        }
-        return Ok(self.piece_at(&end).unwrap())
+    fn move_piece(&mut self, start: u8, end: u8, piece: Piece) {
+        self.remove_piece(start, piece);
+        self.insert_piece(end, piece);
     }
 
-    pub fn apply_move(&mut self, new_move: &Move) -> Result<(Piece, Option<Piece>), InputError> {
-        match new_move {
-            Move::TwoSquarePawnMove(t) => {
-                match self.move_piece(t.basic_move.start, t.basic_move.end) {
-                    Err(e) => Err(e),
-                    Ok(p) => Ok((p, None))
-                }
+    pub fn apply_move(&mut self, new_move: &Move) {
+        if let Some(capture) = new_move.get_capture() {
+            self.remove_piece(capture.square, capture.get_piece());
+        }
+        if let Move::Promotion(p) = new_move {
+            self.remove_piece(p.basic_move.start, p.basic_move.piece);
+            self.insert_piece(p.basic_move.end, Piece { color: p.basic_move.piece.color, piece_type: p.promote_to });
+        } else {
+            for movement in new_move.get_piece_movements() {
+                self.move_piece(movement.start_square, movement.end_square, movement.get_piece());
             }
-            Move::BasicMove(b) => {
-                let captured_piece = self.try_remove_piece(b.end);
-                match self.move_piece(b.start, b.end) {
-                    Err(e) => Err(e),
-                    Ok(p) => Ok((p, captured_piece))
-                }
-            },
-            Move::Castle(c) => {
-                match self.move_piece(c.rook_start, c.rook_end) {
-                    Err(e) => return Err(e),
-                    _ => ()
-                };
-                match self.move_piece(c.king_start, c.king_end) {
-                    Err(e) => Err(e),
-                    Ok(k) => Ok((k, None))
-                }
-            },
-            Move::EnPassant(e) => {
-                let captured_piece = self.try_remove_piece(e.capture_square);
-                match self.move_piece(e.basic_move.start, e.basic_move.end) {
-                    Err(e) => Err(e),
-                    Ok(p) => Ok((p, captured_piece))
-                }
-            },
-            Move::Promotion(p) => {
-                let captured_piece = self.try_remove_piece(p.basic_move.end);
-                match self.try_remove_piece(p.basic_move.start) {
-                    None => return Err(InputError::new(&format!("No piece to move at square {}", p.basic_move.start))),
-                    Some(piece) => {
-                        let promoted_piece = Piece { color: piece.color, piece_type: p.promote_to };
-                        self.insert_piece(p.basic_move.end, promoted_piece);
-                        Ok((self.piece_at(&p.basic_move.end).unwrap(), captured_piece))
-                    }
-                }
-            },
-            Move::NewGame(_) => Err(InputError::new("Cannot apply move 'NewGame'"))
         }
     }
 
-    pub fn unapply_move(&mut self, old_move: &Move) -> Result<(), InputError> {
-        match old_move {
-            Move::EnPassant(e) => {
-                self.move_piece(e.basic_move.end, e.basic_move.start)?;
-                match old_move.get_capture() {
-                    Some(capture) => self.insert_piece(e.capture_square, capture.get_piece()),
-                    None => return Err(InputError::new("En Passant missing captured piece"))
-                };
-            },
-            Move::Promotion(p) => {
-                match self.try_remove_piece(p.basic_move.end) {
-                    None => return Err(InputError::new(&format!("No piece to unmove at square {}", p.basic_move.end))),
-                    Some(piece) => {
-                        let unpromoted_piece = Piece { color: piece.color, piece_type: PieceType::Pawn };
-                        self.insert_piece(p.basic_move.start, unpromoted_piece);
-                    }
-                };
-                match old_move.get_capture() {
-                    Some(capture) => self.insert_piece(p.basic_move.end, capture.get_piece()),
-                    None => ()
-                }
-            },
-            _ => {
-                for movement in old_move.get_piece_movements() {
-                    self.move_piece(movement.end_square, movement.start_square)?;
-                    match old_move.get_capture() {
-                        Some(capture) => self.insert_piece(movement.end_square, capture.get_piece()),
-                        None => ()
-                    }
-                }
+    pub fn unapply_move(&mut self, old_move: &Move) {
+        if let Some(capture) = old_move.get_capture() {
+            self.insert_piece(capture.square, capture.get_piece());
+        }
+        if let Move::Promotion(p) = old_move {
+            self.remove_piece(p.basic_move.end, Piece { color: p.basic_move.piece.color, piece_type: p.promote_to });
+            self.insert_piece(p.basic_move.start, p.basic_move.piece);
+        } else {
+            for movement in old_move.get_piece_movements() {
+                self.move_piece(movement.end_square, movement.start_square, movement.get_piece());
             }
         }
-        return Ok(());
     }
 
     pub fn get_attacks_and_pins(&self, target: u8, color: Color) -> AttacksAndPins {
@@ -398,6 +338,7 @@ impl BoardPositions {
         });
         return result;
     }
+    
 
     fn get_sliding_attack_or_pin(&self, target: u8, dir: SlideDirection, color: Color, attackers: u64) -> Option<AttackOrPin> {
         let ray = get_ray_bitboard(target, dir);
