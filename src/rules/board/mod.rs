@@ -3,12 +3,9 @@ pub mod positions;
 pub mod squares;
 pub mod state;
 
-use std::sync::mpsc::channel;
-
 use fxhash::FxHashMap;
 
 use crate::rules::board::positions::CastlingSquares;
-use crate::util::concurrency::{QueuedThreadPool, Job};
 use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION};
 use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_add_en_passant_target};
 
@@ -138,10 +135,6 @@ fn board_from_fen_state(state: FenBoardState) -> Board {
             }
         },
         id: zobrist_id_from_fen_state(&state),
-        checks: Vec::new(),
-        pins: Vec::new(),
-        pinned: 0u64,
-        responses: Vec::new(),
     }
 }
 
@@ -365,15 +358,11 @@ fn get_piece_moves_closure(piece_square: &PieceSquare, position: &BoardPositions
 }
 
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct Board {
     pub position: BoardPositions,
     pub state: BoardState,
     pub id: u64,
-    checks: Vec<Attack>,
-    pins: Vec<Pin>,
-    pinned: u64,
-    responses: Vec<ApplyableBoardChange>,
 }
 
 impl Board {
@@ -407,51 +396,6 @@ impl Board {
         });
         moves.extend(self.get_castle_moves(self.state.to_move));
         return moves;
-    }
-
-    pub fn get_legal_moves_threaded(&self, thread_pool: &mut QueuedThreadPool<Vec<ApplyableBoardChange>>) -> Vec<ApplyableBoardChange> {
-        let mut moves: Vec<ApplyableBoardChange> = Vec::new();
-        if !self.responses.is_empty() {
-            return self.responses.clone();
-        }
-        let pins = &self.pins;
-        let (tx, rx) = channel();
-        for pin in pins {
-            thread_pool.enqueue(Job {
-                task: get_pinned_moves_closure(pin, &self.position, &self.state, self.id),
-                comm: tx.clone(),
-            });
-        }
-        self.position.get_all_masked_piece_squares_for_color(self.state.to_move, !self.pinned).for_each(|loc| {
-            thread_pool.enqueue(Job {
-                task: get_piece_moves_closure(&loc, &self.position, &self.state, self.id),
-                comm: tx.clone(),
-            });
-        });
-        drop(tx);
-        while let Ok(new_moves) = rx.recv() {
-            moves.extend(new_moves);
-        }
-        moves.extend(self.get_castle_moves(self.state.to_move).into_iter().map(|m| {
-            prepare_change(m, &self.position, &self.state, self.id)
-        }));
-        return moves;
-    }
-
-    pub fn apply_change(&mut self, change: ApplyableBoardChange) -> ReversibleBoardChange {
-        let result = ReversibleBoardChange {
-            prior_zobrist_id: self.id,
-            prior_position: self.position,
-            prior_state: self.state,
-        };
-        self.id = change.new_zobrist_id;
-        self.state = change.new_state;
-        self.position = change.new_position;
-        self.checks = change.checks;
-        self.pins = change.absolute_pins;
-        self.pinned = change.pinned_pieces;
-        self.responses = change.responses;
-        return result;
     }
 
     pub fn make_move(&mut self, new_move: &Move) -> ReversibleBoardChange {

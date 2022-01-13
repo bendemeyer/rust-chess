@@ -26,8 +26,8 @@ impl Game {
         return Engine::do_search(self.board.clone(), depth);
     }
 
-    pub fn threaded_search(&mut self, depth: u8, threads: u8) -> SearchResult {
-        return Engine::do_threaded_search(self.board.clone(), depth, threads);
+    pub fn threaded_search(&mut self, depth: u8, _threads: u8) -> SearchResult {
+        return Engine::do_search(self.board.clone(), depth);
     }
 
     pub fn make_move(&mut self, new_move: &Move) {
@@ -35,16 +35,12 @@ impl Game {
         self.move_history.push(*new_move);
     }
 
-    pub fn perft(&mut self, depth: u8) -> Perft {
-        let mut perft: Perft = Default::default();
-        Engine::do_perft(self.board.clone(), depth, &mut perft);
-        return perft;
+    pub fn perft(&self, depth: u8) -> Perft {
+        return Engine::do_perft(self.board, depth);
     }
 
-    pub fn threaded_perft(&mut self, depth: u8, threads: u8) -> Perft {
-        let mut perft: Perft = Default::default();
-        Engine::do_threaded_perft(self.board.clone(), depth, threads, &mut perft);
-        return perft;
+    pub fn threaded_perft(&self, depth: u8, threads: u8) -> Perft {
+        return Engine::do_threaded_perft(self.board, depth, threads);
     }
 
     pub fn get_legal_moves(&self) -> Vec<Move> {

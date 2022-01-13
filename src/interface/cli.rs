@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Instant};
 
 use tabled::{Table, Style};
 
@@ -221,16 +221,15 @@ impl Interface {
                     Some(d) => d.parse().unwrap(),
                     None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
                 };
+                let start = Instant::now();
                 let result = match a.get_arg("threads") {
                     Some(t) => self.game.threaded_perft(depth, t.parse().unwrap()),
                     None => self.game.perft(depth),
                 };
+                let duration = start.elapsed();
                 let table = Table::new(result.get_analysis()).with(Style::pseudo_clean());
                 self.shell.output(&table.to_string());
-                self.shell.output(&format!("Completed in {:?}", result.duration));
-                self.shell.empty_line();
-                self.shell.output(&format!("Starting Zobrist ID: {}", result.zobrist_start));
-                self.shell.output(&format!("Ending Zobrist ID:   {}", result.zobrist_end));
+                self.shell.output(&format!("Completed in {:?}", duration));
             }
         }
     }

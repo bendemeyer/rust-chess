@@ -1,8 +1,9 @@
 use std::{sync::{Mutex, Arc}, time::{Duration, Instant}, cmp::Ordering};
 
+use crossbeam_channel::unbounded;
 use tabled::Tabled;
 
-use crate::{rules::{board::{Board, state::ApplyableBoardChange}, pieces::movement::{Move, NewGame}, Color}, util::{zobrist::ZobristHashMap, concurrency::{WorkQueue, ThreadPool, QueuedThreadPool}}};
+use crate::{rules::{board::Board, pieces::movement::{Move, NewGame}, Color}, util::{zobrist::ZobristHashMap, concurrency::{ThreadPool, Job}}};
 
 use self::{scores::{best_score, is_better}, evaluation::evaluate_board};
 
@@ -45,11 +46,6 @@ enum PerftType {
 #[derive(Default)]
 pub struct Perft {
     levels: Vec<LevelPerft>,
-    pub cache_hits: u32,
-    pub zobrist_start: u64,
-    pub zobrist_end: u64,
-    start: Option<Instant>,
-    pub duration: Duration,
 }
 
 impl Perft {
@@ -96,15 +92,13 @@ impl Perft {
         return self.levels.iter().collect();
     }
 
-    pub fn start(&mut self) {
-        self.start = Some(Instant::now());
-    }
-
-    pub fn complete(&mut self) {
-        match self.start {
-            Some(i) => self.duration = i.elapsed(),
-            None => ()
+    pub fn merge(&mut self, other: &Self) {
+        while self.levels.len() < other.levels.len() {
+            self.levels.push(Default::default())
         }
+        self.levels.iter_mut().enumerate().for_each(|(i, lp)| {
+            lp.merge(other.levels.iter().nth(i).unwrap_or(&Default::default()));
+        });
     }
 }
 
@@ -113,10 +107,21 @@ impl Perft {
 pub struct LevelPerft {
     pub size: u32,
     pub captures: u32,
-    pub checks: u32,
     pub en_passants: u32,
-    pub promotions: u32,
     pub castles: u32,
+    pub promotions: u32,
+    pub checks: u32,
+}
+
+impl LevelPerft {
+    pub fn merge(&mut self, other: &Self) {
+        self.size        += other.size;
+        self.captures    += other.captures;
+        self.en_passants += other.en_passants;
+        self.castles     += other.castles;
+        self.promotions  += other.promotions;
+        self.checks      += other.checks;
+    }
 }
 
 
@@ -219,53 +224,63 @@ pub struct Engine;
 
 impl Engine {
 
-    pub fn do_threaded_perft(mut board: Board, depth: u8, threads: u8, perft: &mut Perft) {
-        let mut thread_pool: QueuedThreadPool<Vec<ApplyableBoardChange>> = QueuedThreadPool::new();
+    pub fn do_threaded_perft(board: Board, depth: u8, threads: u8) -> Perft {
+        let mut thread_pool = ThreadPool::new();
         thread_pool.init(threads);
-        perft.zobrist_start = board.id;
-        perft.start();
-        Self::threaded_perft(&mut board, 0, depth, perft, &mut thread_pool);
-        perft.complete();
-        thread_pool.join();
-        perft.zobrist_end = board.id;
+        let passable_pool = Arc::new(thread_pool);
+        let result = Self::threaded_perft(board, 0, depth, Arc::clone(&passable_pool));
+        Arc::try_unwrap(passable_pool).unwrap_or_else(|_| panic!("Failed joining threads")).join();
+        return result;
     }
 
-    pub fn do_perft(mut board: Board, depth: u8, perft: &mut Perft) {
-        perft.zobrist_start = board.id;
-        perft.start();
-        Self::perft(&mut board, 0, depth, perft);
-        perft.complete();
-        perft.zobrist_end = board.id;
+    pub fn do_perft(mut board: Board, depth: u8) -> Perft {
+        return Self::perft(&mut board, 0, depth);
     }
 
-    fn threaded_perft(board: &mut Board, depth: u8, max_depth: u8, perft: &mut Perft, thread_pool: &mut QueuedThreadPool<Vec<ApplyableBoardChange>>) {
+    fn threaded_perft(board: Board, depth: u8, max_depth: u8, thread_pool: Arc<ThreadPool<Perft>>) -> Perft {
+        let mut perft: Perft = Default::default();
         perft.increment_size(depth);
-        if depth >= max_depth {
-            return;
+        if board.in_check() {
+            perft.increment_checks(depth);
         }
-        let changes = board.get_legal_moves_threaded(thread_pool);
-        for change in changes {
-            match change.new_move.get_capture() {
+        if depth >= max_depth {
+            return perft;
+        }
+        let moves = board.get_legal_moves();
+        let (tx, rx) = unbounded();
+        for mov in moves {
+            match mov.get_capture() {
                 Some(_) => perft.increment_captures(depth + 1),
                 None => ()
             }
-            match change.new_move {
+            match mov {
                 Move::EnPassant(_) => perft.increment_en_passants(depth + 1),
                 Move::Promotion(_) => perft.increment_promotions(depth + 1),
                 Move::Castle(_) => perft.increment_castles(depth + 1),
                 _ => (),
             }
-            let undo = board.apply_change(change);
-            if board.in_check() { perft.increment_checks(depth + 1); }
-            Self::threaded_perft(board, depth + 1, max_depth, perft, thread_pool);
-            board.unmake_move(undo);
+            let local_pool = Arc::clone(&thread_pool);
+            let mut thread_board = board;
+            thread_board.make_move(&mov);
+            thread_pool.enqueue(Job {
+                task: Box::new(move || {
+                    Self::threaded_perft(thread_board, depth + 1, max_depth, local_pool)
+                }),
+                comm: tx.clone()
+            });
         }
+        drop(tx);
+        while let Ok(result) = rx.recv() {
+            perft.merge(&result);
+        }
+        return perft;
     }
 
-    fn perft(board: &mut Board, depth: u8, max_depth: u8, perft: &mut Perft) {
+    fn perft(board: &mut Board, depth: u8, max_depth: u8) -> Perft {
+        let mut perft: Perft = Default::default();
         perft.increment_size(depth);
         if depth >= max_depth {
-            return;
+            return perft;
         }
         let moves = board.get_legal_moves();
         for new_move in moves {
@@ -281,9 +296,11 @@ impl Engine {
             }
             let change = board.make_move(&new_move);
             if board.in_check() { perft.increment_checks(depth + 1); }
-            Self::perft(board, depth + 1, max_depth, perft);
+            let result = Self::perft(board, depth + 1, max_depth);
             board.unmake_move(change);
+            perft.merge(&result);
         }
+        return perft
     }
 
     pub fn do_search(board: Board, depth: u8) -> SearchResult {
@@ -311,60 +328,6 @@ impl Engine {
             result.calculated_nodes += ctx.calculated_nodes;
             result.cache_hits += ctx.cache_hits;
         }
-        result.complete();
-        return result;
-    }
-
-    pub fn do_threaded_search(board: Board, depth: u8, threads: u8) -> SearchResult {
-        let transposition_table: Arc<Mutex<ZobristHashMap<i16>>> = Arc::new(Mutex::new(Default::default()));
-        let best_forcible: Arc<Mutex<i16>> = Arc::new(Mutex::new(best_score(board.state.get_move_color().swap())));
-        let mut result = SearchResult::from_color(board.state.get_move_color());
-        result.start();
-        let mut moves = board.get_legal_moves();
-        moves.sort();
-        let queue = WorkQueue::from_iter(moves.into_iter().rev().map(|m| {
-            let transpositions = Arc::clone(&transposition_table);
-            let current_best_mutex = Arc::clone(&best_forcible);
-            let mut updated_board = board.clone();
-            let parent_color = updated_board.state.get_move_color();
-            move || {
-                updated_board.make_move(&m);
-                let mut ctx = SearchContext {
-                    board: updated_board,
-                    cache_hits: 0,
-                    calculated_nodes: 0,
-                };
-                let current_best_score: i16;
-                {
-                    current_best_score = *current_best_mutex.lock().unwrap();
-                }
-                let score = Self::search(
-                    best_score(parent_color),
-                    current_best_score,
-                    depth - 1,
-                    &transpositions,
-                    &mut ctx);
-                {
-                    let mut current_best = current_best_mutex.lock().unwrap();
-                    if is_better(score, *current_best, parent_color) {
-                        *current_best = score
-                    }
-                }
-                return ThreadSearchResult {
-                    initial_move: m,
-                    score: score,
-                    calculated_nodes: ctx.calculated_nodes,
-                    cache_hits: ctx.cache_hits,
-                }
-            }
-        }));
-        let mut pool = ThreadPool::from_queue(queue);
-        pool.run(threads);
-        pool.join().iter().for_each(|r| {
-            result.process_move(r.initial_move, r.score);
-            result.calculated_nodes += r.calculated_nodes;
-            result.cache_hits += r.cache_hits;
-        });
         result.complete();
         return result;
     }
