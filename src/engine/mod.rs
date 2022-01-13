@@ -257,7 +257,7 @@ impl Engine {
             }
             let undo = board.apply_change(change);
             if board.in_check() { perft.increment_checks(depth + 1); }
-            Self::perft(board, depth + 1, max_depth, perft);
+            Self::threaded_perft(board, depth + 1, max_depth, perft, thread_pool);
             board.unmake_move(undo);
         }
     }
