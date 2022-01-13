@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, thread::{self, JoinHandle}, sync::{Mutex, Arc, mpsc::Sender, RwLock}, time::Duration};
+use std::{collections::VecDeque, thread::{self, JoinHandle}, sync::{Mutex, Arc, mpsc::{Sender, Receiver, channel}}};
 
 
 pub struct Job<T: Send + 'static> {
@@ -14,40 +14,37 @@ impl<T: Send + 'static> Job<T> {
 
 
 pub struct QueuedThreadPool<T: Send + 'static> {
-    queue: Arc<Mutex<VecDeque<Job<T>>>>,
+    queue_writer: Sender<Job<T>>,
+    queue_reader: Arc<Mutex<Receiver<Job<T>>>>,
     handles: Vec<JoinHandle<()>>,
-    terminated: Arc<RwLock<bool>>,
 }
 
 impl<T: Send + 'static> QueuedThreadPool<T> {
     pub fn new() -> Self {
+        let (tx, rx) = channel();
         return Self {
-            queue: Arc::new(Mutex::new(VecDeque::new())),
+            queue_writer: tx,
+            queue_reader: Arc::new(Mutex::new(rx)),
             handles: Vec::new(),
-            terminated: Arc::new(RwLock::new(false)),
         }
     }
 
-    pub fn enqueue(&mut self, job: Job<T>) {
-        self.queue.lock().unwrap().push_back(job);
+    pub fn enqueue(&self, job: Job<T>) {
+        self.queue_writer.send(job).expect("Failed enqueueing a job for the thread pool");
     }
 
-    pub fn enqueue_many<I>(&mut self, jobs: I) where I: Iterator<Item=Job<T>> {
-        self.queue.lock().unwrap().extend(jobs);
-    }
-
-    fn start_worker(&mut self) -> JoinHandle<()> {
-        let queue = Arc::clone(&self.queue);
-        let terminated = Arc::clone(&self.terminated);
+    fn start_worker(&self) -> JoinHandle<()> {
+        let mutex = Arc::clone(&self.queue_reader);
         return thread::spawn(move || {
             loop {
-                let job = queue.lock().unwrap().pop_front();
+                let job: Result<Job<T>, _>;
+                {
+                    let queue = mutex.lock().unwrap();
+                    job = queue.recv();
+                }
                 match job {
-                    Some(j) => { j.run(); },
-                    None => {
-                        if *terminated.read().unwrap() { break; }
-                        thread::sleep(Duration::from_millis(1))
-                    },
+                    Ok(j) => j.run(),
+                    Err(_) => break,
                 }
             }
         })
@@ -60,7 +57,7 @@ impl<T: Send + 'static> QueuedThreadPool<T> {
     }
 
     pub fn join(self) {
-        *self.terminated.write().unwrap() = true;
+        drop(self.queue_writer);
         self.handles.into_iter().for_each(|h| h.join().unwrap());
     }
 }

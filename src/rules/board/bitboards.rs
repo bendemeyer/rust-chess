@@ -101,6 +101,7 @@ impl PieceBoard {
 }
 
 
+#[derive(Copy, Clone)]
 pub struct PieceSquare {
     pub square: u8,
     pub piece: Piece,

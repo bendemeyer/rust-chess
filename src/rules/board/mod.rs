@@ -3,7 +3,6 @@ pub mod positions;
 pub mod squares;
 pub mod state;
 
-
 use std::sync::mpsc::channel;
 
 use fxhash::FxHashMap;
@@ -340,6 +339,32 @@ fn prepare_change(mov: Move, position: &BoardPositions, state: &BoardState, boar
 }
 
 
+fn get_pinned_moves_closure(pin: &Pin, position: &BoardPositions, state: &BoardState, id: u64) -> Box<dyn FnOnce() -> Vec<ApplyableBoardChange> + Send> {
+    let owned_pin = *pin;
+    let owned_position = *position;
+    let owned_state = *state;
+    let closure = move || {
+        get_legal_moves_for_pinned_piece(&owned_position, &owned_pin, owned_state.en_passant_target).into_iter().map(|m| {
+            prepare_change(m, &owned_position, &owned_state, id)
+        }).collect()
+    };
+    return Box::new(closure);
+}
+
+
+fn get_piece_moves_closure(piece_square: &PieceSquare, position: &BoardPositions, state: &BoardState, id: u64) -> Box<dyn FnOnce() -> Vec<ApplyableBoardChange> + Send> {
+    let owned_piece_square = *piece_square;
+    let owned_position = *position;
+    let owned_state = *state;
+    let closure = move || {
+        get_moves_for_piece_square(&owned_position, &owned_piece_square, owned_state.en_passant_target).into_iter().map(|m| {
+            prepare_change(m, &owned_position, &owned_state, id)
+        }).collect()
+    };
+    return Box::new(closure);
+}
+
+
 #[derive(Clone)]
 pub struct Board {
     pub position: BoardPositions,
@@ -392,27 +417,14 @@ impl Board {
         let pins = &self.pins;
         let (tx, rx) = channel();
         for pin in pins {
-            let position = self.position;
-            let owned_pin = *pin;
-            let state = self.state;
-            let id = self.id;
-            let ep_target = self.state.en_passant_target;
             thread_pool.enqueue(Job {
-                task: Box::new(move || { get_legal_moves_for_pinned_piece(&position, &owned_pin, ep_target).into_iter().map(|m| {
-                    prepare_change(m, &position, &state, id)
-                }).collect() }),
+                task: get_pinned_moves_closure(pin, &self.position, &self.state, self.id),
                 comm: tx.clone(),
             });
         }
         self.position.get_all_masked_piece_squares_for_color(self.state.to_move, !self.pinned).for_each(|loc| {
-            let position = self.position;
-            let state = self.state;
-            let id = self.id;
-            let ep_target = self.state.en_passant_target;
             thread_pool.enqueue(Job {
-                task: Box::new(move || { get_moves_for_piece_square(&position, &loc, ep_target).into_iter().map(|m| {
-                    prepare_change(m, &position, &state, id)
-                }).collect() }),
+                task: get_piece_moves_closure(&loc, &self.position, &self.state, self.id),
                 comm: tx.clone(),
             });
         });
