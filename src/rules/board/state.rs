@@ -1,6 +1,6 @@
 use crate::rules::{Color, pieces::movement::{CastleType, Move}};
 
-use super::{bitboards::get_bit_for_square, positions::{Attack, Pin, BoardPositions}};
+use super::{bitboards::get_bit_for_square, positions::{Attack, Pin, BoardPosition}};
 
 
 #[derive(Clone)]
@@ -11,7 +11,7 @@ pub struct ApplyableBoardChange {
     pub pinned_pieces: u64,
     pub responses: Vec<ApplyableBoardChange>,
     pub new_zobrist_id: u64,
-    pub new_position: BoardPositions,
+    pub new_position: BoardPosition,
     pub new_state: BoardState,
 }
 
@@ -19,7 +19,7 @@ pub struct ApplyableBoardChange {
 #[derive(Copy, Clone)]
 pub struct ReversibleBoardChange {
     pub prior_zobrist_id: u64,
-    pub prior_position: BoardPositions,
+    pub prior_position: BoardPosition,
     pub prior_state: BoardState,
     
 }
@@ -32,7 +32,7 @@ pub struct CastleRight {
 }
 
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BoardCastles {
     pub white_kingside: bool,
     pub white_queenside: bool,
@@ -41,12 +41,21 @@ pub struct BoardCastles {
 }
 
 impl BoardCastles {
-    pub fn revoke_right(&mut self, right: CastleRight) {
+    pub fn revoke_right(&mut self, right: &CastleRight) {
         match (right.color, right.side) {
             (Color::White, CastleType::Kingside)  => self.white_kingside  = false,
             (Color::White, CastleType::Queenside) => self.white_queenside = false,
             (Color::Black, CastleType::Kingside)  => self.black_kingside  = false,
             (Color::Black, CastleType::Queenside) => self.black_queenside = false,
+        }
+    }
+
+    pub fn unrevoke_right(&mut self, right: &CastleRight) {
+        match (right.color, right.side) {
+            (Color::White, CastleType::Kingside)  => self.white_kingside  = true,
+            (Color::White, CastleType::Queenside) => self.white_queenside = true,
+            (Color::Black, CastleType::Kingside)  => self.black_kingside  = true,
+            (Color::Black, CastleType::Queenside) => self.black_queenside = true,
         }
     }
 
@@ -72,7 +81,7 @@ impl Default for BoardCastles {
 }
 
 
-#[derive(Copy, Clone, Default)]
+#[derive(Copy, Clone, Default, PartialEq, Eq)]
 pub struct BoardState {
     pub to_move: Color,
     pub castle_rights: BoardCastles,
@@ -132,20 +141,10 @@ impl BoardState {
     }
 
     pub fn revoke_castle_right(&mut self, castle: &CastleRight) {
-        match (castle.color, castle.side) {
-            (Color::White, CastleType::Kingside) => self.castle_rights.white_kingside = false,
-            (Color::White, CastleType::Queenside) => self.castle_rights.white_queenside = false,
-            (Color::Black, CastleType::Kingside) => self.castle_rights.black_kingside = false,
-            (Color::Black, CastleType::Queenside) => self.castle_rights.black_queenside = false,
-        }
+        self.castle_rights.revoke_right(castle);
     }
 
     pub fn return_castle_right(&mut self, castle: &CastleRight) {
-        match (castle.color, castle.side) {
-            (Color::White, CastleType::Kingside) => self.castle_rights.white_kingside = true,
-            (Color::White, CastleType::Queenside) => self.castle_rights.white_queenside = true,
-            (Color::Black, CastleType::Kingside) => self.castle_rights.black_kingside = true,
-            (Color::Black, CastleType::Queenside) => self.castle_rights.black_queenside = true,
-        }
+        self.castle_rights.unrevoke_right(castle);
     }
 }

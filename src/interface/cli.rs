@@ -2,7 +2,7 @@ use std::{collections::HashSet, time::Instant};
 
 use tabled::{Table, Style};
 
-use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}}, pieces::{PieceType, movement::Move}}, util::fen::{get_notation_for_piece, FenBoardState}};
+use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}}, pieces::{PieceType, movement::Move}}, util::fen::{get_notation_for_piece, FenBoardState}, testing::{perft::PerftRunner, zobrist::ZobristCollisionTester}};
 
 use super::arguments::{ArgumentParser, Arguments};
 
@@ -20,8 +20,11 @@ fn build_argument_parser() -> ArgumentParser {
         .add_positional_arg("count", false, false).unwrap();
 
     builder.add_subcommand("perft").unwrap()
-        .add_named_arg("depth", HashSet::from(["--engine-depth"]), true, false).unwrap()
+        .add_named_arg("depth", HashSet::from(["--test-depth"]), true, false).unwrap()
         .add_named_arg("threads", HashSet::from(["--threads"]), false, false).unwrap();
+
+    builder.add_subcommand("zobrist_test").unwrap()
+        .add_named_arg("depth", HashSet::from(["--test-depth"]), true, false).unwrap();
 
     builder.add_subcommand("move").unwrap();
 
@@ -43,8 +46,8 @@ fn build_argument_parser() -> ArgumentParser {
 
 fn get_text_for_move(mov: &Move) -> String {
     return match mov {
-        Move::NewGame(_) => {
-            String::from("new game")
+        Move::NullMove(_) => {
+            String::from("null move")
         },
         Move::Castle(c) => {
             format!("{} castles {}", c.color.value(), c.side.value())
@@ -101,6 +104,7 @@ impl Interface {
                         "search"        => self.do_search(*s.args),
                         "serialize"     => self.do_serialize(*s.args),
                         "board"         => self.do_board(*s.args),
+                        "zobrist_test"  => self.do_zobrist_test(*s.args),
                         "exit"          => break,
                         x => println!("Unknown subcommand {} encountered", x)
                     },
@@ -207,7 +211,7 @@ impl Interface {
                         }
                     }
                 },
-                Move::NewGame(_) => ()
+                Move::NullMove(_) => ()
             }
         }
         return chosen_move;
@@ -215,7 +219,7 @@ impl Interface {
     
     fn do_perft(&mut self, args: ParsedArgs) {
         match args {
-            ParsedArgs::SubCommand(_s) => panic!("Subcommand 'size' should not have its own subcommands"),
+            ParsedArgs::SubCommand(_s) => panic!("Subcommand 'perft' should not have its own subcommands"),
             ParsedArgs::Arguments(a) => {
                 let depth: u8 = match a.get_arg("depth") {
                     Some(d) => d.parse().unwrap(),
@@ -223,13 +227,35 @@ impl Interface {
                 };
                 let start = Instant::now();
                 let result = match a.get_arg("threads") {
-                    Some(t) => self.game.threaded_perft(depth, t.parse().unwrap()),
-                    None => self.game.perft(depth),
+                    Some(t) => PerftRunner::do_threaded_perft(*self.game.get_board(), depth, t.parse().unwrap()),
+                    None => PerftRunner::do_perft(*self.game.get_board(), depth),
                 };
                 let duration = start.elapsed();
                 let table = Table::new(result.get_analysis()).with(Style::pseudo_clean());
                 self.shell.output(&table.to_string());
                 self.shell.output(&format!("Completed in {:?}", duration));
+            }
+        }
+    }
+
+    fn do_zobrist_test(&self, args: ParsedArgs) {
+        match args {
+            ParsedArgs::SubCommand(_s) => panic!("Subcommand 'zobrist_test' should not have its own subcommands"),
+            ParsedArgs::Arguments(a) => {
+                let depth: u8 = match a.get_arg("depth") {
+                    Some(d) => d.parse().unwrap(),
+                    None => self.shell.input("What depth should we test to? ").parse().unwrap()
+                };
+                let results = ZobristCollisionTester::do_test(*self.game.get_board(), depth);
+                self.shell.empty_line();
+                self.shell.output(&format!("Total Positions Evaluated: {}", results.positions_checked));
+                self.shell.output(&format!("Evaluation Time:           {:?}", results.duration));
+                self.shell.output(&format!("Memory Space Used:         {}", results.memory_size));
+                self.shell.empty_line();
+                self.shell.output(&format!("Zobrist Matches Found:     {}", results.hash_matches));
+                self.shell.output(&format!("True Transpositions Found: {}", results.transpositions));
+                self.shell.output(&format!("Collisions Found:          {}", results.collisions));
+                self.shell.output(&format!("Collided Hash Count:       {}", results.collided_hash_count));
             }
         }
     }

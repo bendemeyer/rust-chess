@@ -108,7 +108,7 @@ impl CastlingSquares {
 
 
 pub struct PieceBoardGenerator {
-    position: BoardPositions,
+    position: BoardPosition,
     pieces: Vec<Piece>,
     mask: u64,
 }
@@ -125,8 +125,8 @@ impl Iterator for PieceBoardGenerator {
 }
 
 
-#[derive(Copy, Clone, Default)]
-pub struct BoardPositions {
+#[derive(Copy, Clone, Default, Eq, PartialEq)]
+pub struct BoardPosition {
     white_pieces: u64,
     black_pieces: u64,
     pawns: u64,
@@ -137,7 +137,7 @@ pub struct BoardPositions {
     kings: u64,
 }
 
-impl BoardPositions {
+impl BoardPosition {
     pub fn from_piece_map(map: FxHashMap<u8, Piece>) -> Self {
         return map.into_iter().fold(Default::default(), |mut locs, (s, p)| {
             locs.insert_piece(s, p);

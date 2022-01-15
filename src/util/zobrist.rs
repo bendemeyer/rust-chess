@@ -47,7 +47,7 @@ impl Hasher for ZobristHasher {
     }
 
     fn write(&mut self, _bytes: &[u8]) {
-        panic!("Hopefully this isn't used!")
+        panic!("Tried to hash data other than a u64 with ZobrishHasher")
     }
 
     fn write_u64(&mut self, i: u64) {

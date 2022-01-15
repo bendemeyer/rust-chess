@@ -1,9 +1,6 @@
-use std::{sync::{Mutex, Arc}, time::{Duration, Instant}, cmp::Ordering};
+use std::{sync::Mutex, time::{Duration, Instant}, cmp::Ordering};
 
-use crossbeam_channel::unbounded;
-use tabled::Tabled;
-
-use crate::{rules::{board::Board, pieces::movement::{Move, NewGame}, Color}, util::{zobrist::ZobristHashMap, concurrency::{ThreadPool, Job}}};
+use crate::{rules::{board::Board, pieces::movement::{Move, NullMove}, Color}, util::{zobrist::ZobristHashMap}};
 
 use self::{scores::{best_score, is_better}, evaluation::evaluate_board};
 
@@ -33,98 +30,6 @@ impl Ord for Move {
 }
 
 
-enum PerftType {
-    Size,
-    Captures,
-    EnPassants,
-    Castles,
-    Promotions,
-    Checks,
-}
-
-
-#[derive(Default)]
-pub struct Perft {
-    levels: Vec<LevelPerft>,
-}
-
-impl Perft {
-    fn create_and_increment(&mut self, level: u8, analysis_type: PerftType) {
-        while self.levels.len() <= level as usize {
-            self.levels.push(Default::default());
-        }
-        let mut analysis_level = self.levels.iter_mut().nth(level as usize).unwrap();
-        match analysis_type {
-            PerftType::Size       => analysis_level.size += 1,
-            PerftType::Captures   => analysis_level.captures += 1,
-            PerftType::EnPassants => analysis_level.en_passants += 1,
-            PerftType::Castles    => analysis_level.castles += 1,
-            PerftType::Promotions => analysis_level.promotions += 1,
-            PerftType::Checks     => analysis_level.checks += 1,
-        };
-    }
-
-    pub fn increment_size(&mut self, level: u8) {
-        self.create_and_increment(level, PerftType::Size);
-    }
-
-    pub fn increment_captures(&mut self, level: u8) {
-        self.create_and_increment(level, PerftType::Captures);
-    }
-
-    pub fn increment_checks(&mut self, level: u8) {
-        self.create_and_increment(level, PerftType::Checks);
-    }
-
-    pub fn increment_en_passants(&mut self, level: u8) {
-        self.create_and_increment(level, PerftType::EnPassants);
-    }
-
-    pub fn increment_promotions(&mut self, level: u8) {
-        self.create_and_increment(level, PerftType::Promotions);
-    }
-
-    pub fn increment_castles(&mut self, level: u8) {
-        self.create_and_increment(level, PerftType::Castles);
-    }
-
-    pub fn get_analysis(&self) -> Vec<&LevelPerft> {
-        return self.levels.iter().collect();
-    }
-
-    pub fn merge(&mut self, other: &Self) {
-        while self.levels.len() < other.levels.len() {
-            self.levels.push(Default::default())
-        }
-        self.levels.iter_mut().enumerate().for_each(|(i, lp)| {
-            lp.merge(other.levels.iter().nth(i).unwrap_or(&Default::default()));
-        });
-    }
-}
-
-
-#[derive(Default, Tabled)]
-pub struct LevelPerft {
-    pub size: u32,
-    pub captures: u32,
-    pub en_passants: u32,
-    pub castles: u32,
-    pub promotions: u32,
-    pub checks: u32,
-}
-
-impl LevelPerft {
-    pub fn merge(&mut self, other: &Self) {
-        self.size        += other.size;
-        self.captures    += other.captures;
-        self.en_passants += other.en_passants;
-        self.castles     += other.castles;
-        self.promotions  += other.promotions;
-        self.checks      += other.checks;
-    }
-}
-
-
 pub struct SearchResult {
     color: Color,
     best_move: Move,
@@ -139,7 +44,7 @@ impl SearchResult {
     pub fn from_color(color: Color) -> Self {
         Self {
             color: color,
-            best_move: Move::NewGame(NewGame {}),
+            best_move: Move::NullMove(NullMove {}),
             best_move_score: best_score(color.swap()),
             calculated_nodes: 0,
             cache_hits: 0,
@@ -175,14 +80,6 @@ impl SearchResult {
 }
 
 
-struct ThreadSearchResult {
-    initial_move: Move,
-    score: i16,
-    calculated_nodes: u32,
-    cache_hits: u32,
-}
-
-
 struct SearchContext {
     board: Board,
     calculated_nodes: u32,
@@ -203,105 +100,12 @@ impl SearchContext {
             Color::Black => new < old
         }
     }
-
-    pub fn best_possible(&self) -> i16 {
-        match self.board.state.get_move_color() {
-            Color::White => i16::MAX,
-            Color::Black => i16::MIN,
-        }
-    }
-
-    pub fn worst_possible(&self) -> i16 {
-        match self.board.state.get_move_color() {
-            Color::White => i16::MIN,
-            Color::Black => i16::MAX,
-        }
-    }
 }
 
 
 pub struct Engine;
 
 impl Engine {
-
-    pub fn do_threaded_perft(board: Board, depth: u8, threads: u8) -> Perft {
-        let mut thread_pool = ThreadPool::new();
-        thread_pool.init(threads);
-        let passable_pool = Arc::new(thread_pool);
-        let result = Self::threaded_perft(board, 0, depth, Arc::clone(&passable_pool));
-        Arc::try_unwrap(passable_pool).unwrap_or_else(|_| panic!("Failed joining threads")).join();
-        return result;
-    }
-
-    pub fn do_perft(mut board: Board, depth: u8) -> Perft {
-        return Self::perft(&mut board, 0, depth);
-    }
-
-    fn threaded_perft(board: Board, depth: u8, max_depth: u8, thread_pool: Arc<ThreadPool<Perft>>) -> Perft {
-        let mut perft: Perft = Default::default();
-        perft.increment_size(depth);
-        if board.in_check() {
-            perft.increment_checks(depth);
-        }
-        if depth >= max_depth {
-            return perft;
-        }
-        let moves = board.get_legal_moves();
-        let (tx, rx) = unbounded();
-        for mov in moves {
-            match mov.get_capture() {
-                Some(_) => perft.increment_captures(depth + 1),
-                None => ()
-            }
-            match mov {
-                Move::EnPassant(_) => perft.increment_en_passants(depth + 1),
-                Move::Promotion(_) => perft.increment_promotions(depth + 1),
-                Move::Castle(_) => perft.increment_castles(depth + 1),
-                _ => (),
-            }
-            let local_pool = Arc::clone(&thread_pool);
-            let mut thread_board = board;
-            thread_board.make_move(&mov);
-            thread_pool.enqueue(Job {
-                task: Box::new(move || {
-                    Self::threaded_perft(thread_board, depth + 1, max_depth, local_pool)
-                }),
-                comm: tx.clone()
-            });
-        }
-        drop(tx);
-        while let Ok(result) = rx.recv() {
-            perft.merge(&result);
-        }
-        return perft;
-    }
-
-    fn perft(board: &mut Board, depth: u8, max_depth: u8) -> Perft {
-        let mut perft: Perft = Default::default();
-        perft.increment_size(depth);
-        if depth >= max_depth {
-            return perft;
-        }
-        let moves = board.get_legal_moves();
-        for new_move in moves {
-            match new_move.get_capture() {
-                Some(_) => perft.increment_captures(depth + 1),
-                None => ()
-            }
-            match new_move {
-                Move::EnPassant(_) => perft.increment_en_passants(depth + 1),
-                Move::Promotion(_) => perft.increment_promotions(depth + 1),
-                Move::Castle(_) => perft.increment_castles(depth + 1),
-                _ => (),
-            }
-            let change = board.make_move(&new_move);
-            if board.in_check() { perft.increment_checks(depth + 1); }
-            let result = Self::perft(board, depth + 1, max_depth);
-            board.unmake_move(change);
-            perft.merge(&result);
-        }
-        return perft
-    }
 
     pub fn do_search(board: Board, depth: u8) -> SearchResult {
         let transposition_table: Mutex<ZobristHashMap<i16>> = Mutex::new(Default::default());

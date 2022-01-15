@@ -189,7 +189,7 @@ impl Capture {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Move {
-    NewGame(NewGame),
+    NullMove(NullMove),
     BasicMove(BasicMove),
     Castle(Castle),
     Promotion(Promotion),
@@ -200,7 +200,7 @@ pub enum Move {
 impl Move {
     pub fn get_piece_movements(&self) -> Vec<PieceMovement> {
         match self {
-            Move::NewGame(_m) => Vec::new(),
+            Move::NullMove(_m) => Vec::new(),
             Move::BasicMove(m) => m.get_piece_movements(),
             Move::Castle(m) => m.get_piece_movements(),
             Move::Promotion(m) => m.basic_move.get_piece_movements(),
@@ -211,7 +211,7 @@ impl Move {
 
     pub fn get_capture(&self) -> Option<Capture> {
         match self {
-            Move::NewGame(_m) => None,
+            Move::NullMove(_m) => None,
             Move::BasicMove(m) => m.get_capture(),
             Move::Castle(m) => m.get_capture(),
             Move::Promotion(m) => m.basic_move.get_capture(),
@@ -228,7 +228,7 @@ impl Move {
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct NewGame {}
+pub struct NullMove {}
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 pub struct BasicMove {

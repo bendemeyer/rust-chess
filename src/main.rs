@@ -2,14 +2,15 @@
 #[macro_use] extern crate lazy_static;
 
 
-use interface::cli::Interface;
-
-
 mod engine;
 mod game;
 mod interface;
 mod rules;
+mod testing;
 mod util;
+
+
+use interface::cli::Interface;
 
 
 fn main() {

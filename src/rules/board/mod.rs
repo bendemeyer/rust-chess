@@ -10,7 +10,7 @@ use crate::util::fen::{FenBoardState, Castling, STARTING_POSITION};
 use crate::util::zobrist::{BoardChange, zobrist_init, PieceLocation, zobrist_update_turn, zobrist_update_remove_en_passant_target, zobrist_update_lose_castle_right, zobrist_update_apply_move, zobrist_update_add_en_passant_target};
 
 use self::bitboards::{BitboardSquares, get_bit_for_square, get_moves_for_piece, PieceSquare};
-use self::positions::{BoardPositions, Pin, AttacksAndPins, Attack};
+use self::positions::{BoardPosition, Pin, AttacksAndPins, Attack};
 use self::squares::{BoardSquare, get_col_and_row_from_square, get_square_from_col_and_row, is_fourth_rank, is_eighth_rank, is_second_rank};
 use self::state::{CastleRight, BoardState, BoardCastles, ReversibleBoardChange, ApplyableBoardChange};
 
@@ -80,7 +80,7 @@ fn piece_map_from_fen_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> FxHa
     return piece_map;
 }
 
-pub fn fen_board_from_position(position: &BoardPositions) -> [[Option<(Color, PieceType)>; 8]; 8] {
+pub fn fen_board_from_position(position: &BoardPosition) -> [[Option<(Color, PieceType)>; 8]; 8] {
     let mut board: [[Option<(Color, PieceType)>; 8]; 8] = Default::default();
     (0u8..=7u8).rev().enumerate().for_each(|(row, index )| {
         (0u8..=7u8).for_each(|col| {
@@ -118,7 +118,7 @@ fn zobrist_id_from_fen_state(state: &FenBoardState) -> u64 {
 fn board_from_fen_state(state: FenBoardState) -> Board {
     let piece_map = piece_map_from_fen_board(state.board);
     return Board {
-        position: BoardPositions::from_piece_map(piece_map.clone()),
+        position: BoardPosition::from_piece_map(piece_map.clone()),
         state: BoardState {
             to_move: state.to_move,
             en_passant_target: match state.en_passant {
@@ -163,12 +163,12 @@ fn get_castle_details(color: Color, castle_type: CastleType) -> &'static Castlin
 }
 
 
-fn get_legal_king_moves(position: &BoardPositions, color: Color) -> Vec<Move> {
+fn get_legal_king_moves(position: &BoardPosition, color: Color) -> Vec<Move> {
     let king_square = position.find_king(color);
     return get_moves_for_piece_square(position, &PieceSquare{square: king_square, piece: Piece { color: color, piece_type: PieceType::King }}, 0u64);
 }
 
-fn get_legal_moves_from_check(position: &BoardPositions, color: Color, check: &Attack, pinned: u64, ep_target: u64) -> Vec<Move> {
+fn get_legal_moves_from_check(position: &BoardPosition, color: Color, check: &Attack, pinned: u64, ep_target: u64) -> Vec<Move> {
     let mut moves = get_legal_king_moves(position, color);
     for loc in position.get_all_masked_piece_squares_for_color(color, !pinned) {
         if loc.piece.piece_type == PieceType::King { continue };
@@ -193,7 +193,7 @@ fn get_legal_moves_from_check(position: &BoardPositions, color: Color, check: &A
     return moves;
 }
 
-fn get_legal_moves_for_pinned_piece(position: &BoardPositions, pin: &Pin, ep_target: u64) -> Vec<Move> {
+fn get_legal_moves_for_pinned_piece(position: &BoardPosition, pin: &Pin, ep_target: u64) -> Vec<Move> {
     let pinned_piece = position.piece_at(&pin.pinned_square).unwrap();
     let move_board = get_moves_for_piece(
         pin.pinned_square,
@@ -208,7 +208,7 @@ fn get_legal_moves_for_pinned_piece(position: &BoardPositions, pin: &Pin, ep_tar
     })
 }
 
-fn get_moves_for_piece_square(position: &BoardPositions, loc: &PieceSquare, ep_target: u64) -> Vec<Move> {
+fn get_moves_for_piece_square(position: &BoardPosition, loc: &PieceSquare, ep_target: u64) -> Vec<Move> {
     let move_board = get_moves_for_piece(
         loc.square,
         loc.piece,
@@ -221,7 +221,7 @@ fn get_moves_for_piece_square(position: &BoardPositions, loc: &PieceSquare, ep_t
     })
 }
 
-fn build_move(position: &BoardPositions, start: u8, end: u8, piece: &Piece, ep_target: u64) -> Vec<Move> {
+fn build_move(position: &BoardPosition, start: u8, end: u8, piece: &Piece, ep_target: u64) -> Vec<Move> {
     let capture = position.piece_at(&end).map(|p| p);
     let basic_move = BasicMove { piece: *piece, start: start, end: end, capture: capture };
     if piece.piece_type == PieceType::King && position.is_check(end, piece.color) {
@@ -279,7 +279,7 @@ fn predict_zobrist_update(old_id: u64, mov: &Move, revoked_castle_rights: &Vec<C
 }
 
 
-fn prepare_change(mov: Move, position: &BoardPositions, state: &BoardState, board_id: u64) -> ApplyableBoardChange {
+fn prepare_change(mov: Move, position: &BoardPosition, state: &BoardState, board_id: u64) -> ApplyableBoardChange {
     let mut updated_position = *position;
     let mut updated_state = *state;
     updated_position.apply_move(&mov);
@@ -332,7 +332,7 @@ fn prepare_change(mov: Move, position: &BoardPositions, state: &BoardState, boar
 }
 
 
-fn get_pinned_moves_closure(pin: &Pin, position: &BoardPositions, state: &BoardState, id: u64) -> Box<dyn FnOnce() -> Vec<ApplyableBoardChange> + Send> {
+fn get_pinned_moves_closure(pin: &Pin, position: &BoardPosition, state: &BoardState, id: u64) -> Box<dyn FnOnce() -> Vec<ApplyableBoardChange> + Send> {
     let owned_pin = *pin;
     let owned_position = *position;
     let owned_state = *state;
@@ -345,7 +345,7 @@ fn get_pinned_moves_closure(pin: &Pin, position: &BoardPositions, state: &BoardS
 }
 
 
-fn get_piece_moves_closure(piece_square: &PieceSquare, position: &BoardPositions, state: &BoardState, id: u64) -> Box<dyn FnOnce() -> Vec<ApplyableBoardChange> + Send> {
+fn get_piece_moves_closure(piece_square: &PieceSquare, position: &BoardPosition, state: &BoardState, id: u64) -> Box<dyn FnOnce() -> Vec<ApplyableBoardChange> + Send> {
     let owned_piece_square = *piece_square;
     let owned_position = *position;
     let owned_state = *state;
@@ -358,9 +358,9 @@ fn get_piece_moves_closure(piece_square: &PieceSquare, position: &BoardPositions
 }
 
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct Board {
-    pub position: BoardPositions,
+    pub position: BoardPosition,
     pub state: BoardState,
     pub id: u64,
 }
@@ -377,6 +377,13 @@ impl Board {
 
     pub fn to_fen(&self) -> String {
         return fen_state_from_board(self).to_fen();
+    }
+
+    pub fn repeats(&self, other: &Self) -> bool {
+        return self.position == other.position &&
+            self.state.to_move == other.state.to_move &&
+            self.state.en_passant_target == other.state.en_passant_target &&
+            self.state.castle_rights == other.state.castle_rights;
     }
 
     pub fn get_legal_moves(&self) -> Vec<Move> {
