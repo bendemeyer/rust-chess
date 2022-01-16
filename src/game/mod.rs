@@ -26,14 +26,14 @@ impl GameHistory {
 
     pub fn take_turn(&mut self, mov: &Move) {
         let turn = Turn { board: self.current_board, move_played: *mov };
-        self.add_repetition(turn.board.id, turn.board);
+        self.add_repetition(turn.board.zobrist.get_id(), turn.board);
         self.turn_history.push(turn);
         self.current_board.make_move(mov);
     }
 
     pub fn untake_turn(&mut self) {
         let last_turn = self.turn_history.pop().unwrap();
-        self.repetitions.get_mut(&last_turn.board.id).unwrap().pop();
+        self.repetitions.get_mut(&last_turn.board.zobrist.get_id()).unwrap().pop();
     }
 
     fn add_repetition(&mut self, hash: u64, board: Board) {

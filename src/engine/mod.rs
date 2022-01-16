@@ -148,7 +148,7 @@ impl Engine {
             let cache_hit: Option<i16>;
             {
                 let map = transpositions.lock().unwrap();
-                cache_hit = map.get(&ctx.board.id).map(|s| *s);
+                cache_hit = map.get(&ctx.board.zobrist.get_id()).map(|s| *s);
             }
             let score = match cache_hit {
                 Some(cached_score) => {
@@ -159,7 +159,7 @@ impl Engine {
                     let calculated_score =  Self::search(opponent_best_forcible, best_forcible, depth - 1, transpositions, ctx);
                     {
                         let mut map = transpositions.lock().unwrap();
-                        map.insert(ctx.board.id, calculated_score);
+                        map.insert(ctx.board.zobrist.get_id(), calculated_score);
                     }
                     calculated_score
                 },

@@ -3,7 +3,7 @@ use std::collections::{HashSet, VecDeque};
 use crate::rules::Color;
 
 use crate::rules::board::squares::BoardSquare;
-use crate::rules::pieces::PieceType;
+use crate::rules::pieces::{PieceType, Piece};
 
 use super::errors::InputError;
 
@@ -11,8 +11,8 @@ use super::errors::InputError;
 pub static STARTING_POSITION: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 
-pub fn get_notation_for_piece(color: Color, ptype: PieceType) -> char {
-    let c = match ptype {
+pub fn get_notation_for_piece(piece: Piece) -> char {
+    let c = match piece.piece_type {
         PieceType::Pawn   => 'P',
         PieceType::Knight => 'N',
         PieceType::Bishop => 'B',
@@ -20,33 +20,33 @@ pub fn get_notation_for_piece(color: Color, ptype: PieceType) -> char {
         PieceType::Queen  => 'Q',
         PieceType::King   => 'K',
     };
-    return if color == Color::White { c } else { c.to_lowercase().next().unwrap() };
+    return if piece.color == Color::White { c } else { c.to_lowercase().next().unwrap() };
 }
 
 
-fn get_piece_for_notation(c: char) -> Result<(Color, PieceType), InputError> {
+fn get_piece_for_notation(c: char) -> Result<Piece, InputError> {
     return match c {
-        'P' => Ok((Color::White, PieceType::Pawn  )), 'p' => Ok((Color::Black, PieceType::Pawn  )),
-        'N' => Ok((Color::White, PieceType::Knight)), 'n' => Ok((Color::Black, PieceType::Knight)),
-        'B' => Ok((Color::White, PieceType::Bishop)), 'b' => Ok((Color::Black, PieceType::Bishop)),
-        'R' => Ok((Color::White, PieceType::Rook  )), 'r' => Ok((Color::Black, PieceType::Rook  )),
-        'Q' => Ok((Color::White, PieceType::Queen )), 'q' => Ok((Color::Black, PieceType::Queen )),
-        'K' => Ok((Color::White, PieceType::King  )), 'k' => Ok((Color::Black, PieceType::King  )),
+        'P' => Ok(Piece { color: Color::White, piece_type: PieceType::Pawn   }), 'p' => Ok(Piece { color: Color::Black, piece_type: PieceType::Pawn   }),
+        'N' => Ok(Piece { color: Color::White, piece_type: PieceType::Knight }), 'n' => Ok(Piece { color: Color::Black, piece_type: PieceType::Knight }),
+        'B' => Ok(Piece { color: Color::White, piece_type: PieceType::Bishop }), 'b' => Ok(Piece { color: Color::Black, piece_type: PieceType::Bishop }),
+        'R' => Ok(Piece { color: Color::White, piece_type: PieceType::Rook   }), 'r' => Ok(Piece { color: Color::Black, piece_type: PieceType::Rook   }),
+        'Q' => Ok(Piece { color: Color::White, piece_type: PieceType::Queen  }), 'q' => Ok(Piece { color: Color::Black, piece_type: PieceType::Queen  }),
+        'K' => Ok(Piece { color: Color::White, piece_type: PieceType::King   }), 'k' => Ok(Piece { color: Color::Black, piece_type: PieceType::King   }),
         _ => Err(InputError::new("Not a valid piece identifier")),
     }
 }
 
 
-fn get_notation_for_row(row: [Option<(Color, PieceType)>; 8]) -> String {
+fn get_notation_for_row(row: [Option<Piece>; 8]) -> String {
     let mut empty_count: u8 = 0;
     let mut row_string = String::new();
     for option in row.iter() {
         match option {
             None => empty_count += 1,
-            Some((color, piece)) => {
+            Some(piece) => {
                 if empty_count > 0 { row_string.push(empty_count.to_string().chars().nth(0).unwrap()) }
                 empty_count = 0;
-                row_string.push(get_notation_for_piece(*color, *piece));
+                row_string.push(get_notation_for_piece(*piece));
             }
         }
     }
@@ -55,12 +55,12 @@ fn get_notation_for_row(row: [Option<(Color, PieceType)>; 8]) -> String {
 }
 
 
-fn get_row_from_notation(fen: &str) -> [Option<(Color, PieceType)>; 8] {
-    let mut row: [Option<(Color, PieceType)>; 8] = Default::default();
+fn get_row_from_notation(fen: &str) -> [Option<Piece>; 8] {
+    let mut row: [Option<Piece>; 8] = Default::default();
     let mut index: usize = 0;
     for note in fen.chars() {
         match get_piece_for_notation(note) {
-            Ok(tup) => { row[index] = Some(tup); index += 1; },
+            Ok(piece) => { row[index] = Some(piece); index += 1; },
             Err(_e) => {
                 let empty_count = note.to_string().parse::<u8>().unwrap();
                 for _ in 1..=empty_count { row[index] = None; index += 1; }
@@ -71,13 +71,13 @@ fn get_row_from_notation(fen: &str) -> [Option<(Color, PieceType)>; 8] {
 }
 
 
-pub fn get_notation_for_board(board: [[Option<(Color, PieceType)>; 8]; 8]) -> String {
+pub fn get_notation_for_board(board: [[Option<Piece>; 8]; 8]) -> String {
     return board.into_iter().map(|row| get_notation_for_row(row)).collect::<Vec<String>>().join("/");
 }
 
 
-fn get_board_from_notation(fen: &str) -> [[Option<(Color, PieceType)>; 8]; 8] {
-    let mut board: [[Option<(Color, PieceType)>; 8]; 8] = Default::default();
+fn get_board_from_notation(fen: &str) -> [[Option<Piece>; 8]; 8] {
+    let mut board: [[Option<Piece>; 8]; 8] = Default::default();
     for (index, row_string) in fen.split("/").enumerate() {
         board[index] = get_row_from_notation(row_string);
     }
@@ -147,7 +147,7 @@ pub struct Castling {
 
 
 pub struct FenBoardState {
-    pub board: [[Option<(Color, PieceType)>; 8]; 8],
+    pub board: [[Option<Piece>; 8]; 8],
     pub to_move: Color,
     pub castling: Castling,
     pub en_passant: Option<BoardSquare>,

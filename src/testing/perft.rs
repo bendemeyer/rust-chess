@@ -1,4 +1,5 @@
 use crossbeam_channel::unbounded;
+use num_format::{ToFormattedString, Locale};
 use tabled::Tabled;
 
 use crate::{rules::{board::Board, pieces::movement::{Move, NullMove}}, util::concurrency::{ThreadPool, Job}};
@@ -59,8 +60,8 @@ impl Perft {
         self.create_and_increment(level, PerftType::Castles);
     }
 
-    pub fn get_analysis(&self) -> Vec<&LevelPerft> {
-        return self.levels.iter().rev().collect();
+    pub fn get_analysis(&self) -> Vec<PrintablePerft> {
+        return self.levels.iter().rev().map(|l| PrintablePerft::from_level(l)).collect();
     }
 
     pub fn merge(&mut self, other: &Self) {
@@ -74,7 +75,7 @@ impl Perft {
 }
 
 
-#[derive(Default, Tabled)]
+#[derive(Default)]
 pub struct LevelPerft {
     pub size: u32,
     pub captures: u32,
@@ -92,6 +93,30 @@ impl LevelPerft {
         self.castles     += other.castles;
         self.promotions  += other.promotions;
         self.checks      += other.checks;
+    }
+}
+
+
+#[derive(Tabled)]
+pub struct PrintablePerft {
+    pub size: String,
+    pub captures: String,
+    pub en_passants: String,
+    pub castles: String,
+    pub promotions: String,
+    pub checks: String,
+}
+
+impl PrintablePerft {
+    pub fn from_level(level: &LevelPerft) -> Self {
+        return Self {
+            size: level.size.to_formatted_string(&Locale::en),
+            captures: level.captures.to_formatted_string(&Locale::en),
+            en_passants: level.en_passants.to_formatted_string(&Locale::en),
+            castles: level.castles.to_formatted_string(&Locale::en),
+            promotions: level.promotions.to_formatted_string(&Locale::en),
+            checks: level.checks.to_formatted_string(&Locale::en),
+        }
     }
 }
 

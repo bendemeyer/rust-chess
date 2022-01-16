@@ -1,8 +1,9 @@
 use std::{collections::HashSet, time::Instant};
 
-use tabled::{Table, Style};
+use num_format::{ToFormattedString, Locale};
+use tabled::{Table, Style, Alignment, Modify, Full};
 
-use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}}, pieces::{PieceType, movement::Move}}, util::fen::{get_notation_for_piece, FenBoardState}, testing::{perft::PerftRunner, zobrist::ZobristCollisionTester}};
+use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}, fen_board_from_position, Board}, pieces::{PieceType, movement::Move}}, util::{fen::{get_notation_for_piece, FenBoardState}, zobrist::ZobristId}, testing::{perft::PerftRunner, zobrist::ZobristCollisionTester}};
 
 use super::arguments::{ArgumentParser, Arguments};
 
@@ -32,7 +33,9 @@ fn build_argument_parser() -> ArgumentParser {
         .add_positional_arg("type", true, false).unwrap();
 
     builder.add_subcommand("board").unwrap()
-        .add_flag_arg("as_fen", HashSet::from(["--as-fen"])).unwrap();
+        .add_flag_arg("hide_board", HashSet::from(["--hide-board"])).unwrap()
+        .add_flag_arg("as_fen", HashSet::from(["--as-fen"])).unwrap()
+        .add_flag_arg("as_zobrist", HashSet::from(["--as-zobrist"])).unwrap();
 
     builder.add_subcommand("search").unwrap()
         .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap()
@@ -67,6 +70,24 @@ fn get_text_for_move(mov: &Move) -> String {
             format!("{} {} {}", piece_text, movement_text, result_text)
         }
     }
+}
+
+
+fn format_board_for_display(board: &Board) -> Vec<String> {
+    let mut result = Vec::new();
+    result.push(String::from("┌───┬───┬───┬───┬───┬───┬───┬───┐"));
+    fen_board_from_position(&board.position).iter().for_each(|row| {
+        result.push(row.iter().fold(String::from("│"), |row_string, square| {
+            format!("{} {} │", row_string, match square {
+                Some(piece) => get_notation_for_piece(*piece).to_string(),
+                None => String::from(" "),
+            })
+        }));
+        result.push(String::from("├───┼───┼───┼───┼───┼───┼───┼───┤"));
+    });
+    result.pop();
+    result.push(String::from("└───┴───┴───┴───┴───┴───┴───┴───┘"));
+    return result;
 }
 
 
@@ -231,7 +252,7 @@ impl Interface {
                     None => PerftRunner::do_perft(*self.game.get_board(), depth),
                 };
                 let duration = start.elapsed();
-                let table = Table::new(result.get_analysis()).with(Style::pseudo_clean());
+                let table = Table::new(result.get_analysis()).with(Style::pseudo_clean()).with(Modify::new(Full).with(Alignment::right()));
                 self.shell.output(&table.to_string());
                 self.shell.output(&format!("Completed in {:?}", duration));
             }
@@ -248,14 +269,36 @@ impl Interface {
                 };
                 let results = ZobristCollisionTester::do_test(*self.game.get_board(), depth);
                 self.shell.empty_line();
-                self.shell.output(&format!("Total Positions Evaluated: {}", results.positions_checked));
-                self.shell.output(&format!("Evaluation Time:           {:?}", results.duration));
-                self.shell.output(&format!("Memory Space Used:         {}", results.memory_size));
+                self.shell.output(&format!("Total Positions Evaluated: {}", results.positions_checked.to_formatted_string(&Locale::en)));
+                self.shell.output(&format!("          Evaluation Time: {:?}", results.duration));
+                self.shell.output(&format!("        Memory Space Used: {}", bytefmt::format(results.memory_size as u64)));
                 self.shell.empty_line();
-                self.shell.output(&format!("Zobrist Matches Found:     {}", results.hash_matches));
-                self.shell.output(&format!("True Transpositions Found: {}", results.transpositions));
-                self.shell.output(&format!("Collisions Found:          {}", results.collisions));
-                self.shell.output(&format!("Collided Hash Count:       {}", results.collided_hash_count));
+                self.shell.output(&format!("    Zobrist Matches Found: {}", results.hash_matches.to_formatted_string(&Locale::en)));
+                self.shell.output(&format!("True Transpositions Found: {}", results.transpositions.to_formatted_string(&Locale::en)));
+                self.shell.output(&format!("         Collisions Found: {}", results.collisions.to_formatted_string(&Locale::en)));
+                self.shell.output(&format!("      Collided Hash Count: {}", results.collided_hash_count.to_formatted_string(&Locale::en)));
+                self.shell.empty_line();
+
+                for collision in results.collision_pairs {
+                    let mut old = collision.fen_2;
+                    let mut new = collision.fen_1;
+                    self.shell.output("Collision:");
+                    old.push_str(" 0 0");
+                    new.push_str(" 0 0");
+                    self.shell.output(&format!("             Move: {}", get_text_for_move(&collision.cause)));
+                    self.shell.output(&format!("            Fen 1: {}", old));
+                    self.shell.output(&format!("            Fen 2: {}", new));
+                    self.shell.output(&format!("           Hash 1: {:064b}", ZobristId::from_fen(&FenBoardState::from_fen(&old)).get_id()));
+                    self.shell.output(&format!("    Collided Hash: {:064b}", collision.hash));
+                    self.shell.output(&format!("           Hash 2: {:064b}", ZobristId::from_fen(&FenBoardState::from_fen(&new)).get_id()));
+                    let old_board = format_board_for_display(&Board::from_fen(&old));
+                    let new_board = format_board_for_display(&Board::from_fen(&new));
+                    self.shell.output("        Board 1:               Board 2:");
+                    old_board.into_iter().zip(new_board.into_iter()).for_each(|(old_row, new_row)| {
+                        self.shell.output(&format!("    {}        {}", old_row, new_row));
+                    });
+                    self.shell.empty_line();
+                }
             }
         }
     }
@@ -264,19 +307,21 @@ impl Interface {
         match args {
             ParsedArgs::SubCommand(_s) => panic!("Subcommand 'board' should not have its own subcommands"),
             ParsedArgs::Arguments(a) => {
-                let fen = self.game.serialize_board();
-                match a.get_flag("as_fen") {
-                    true => self.shell.output(&fen),
-                    false => {
-                        FenBoardState::from_fen(&fen).board.iter().for_each(|row| {
-                            self.shell.output(&format!("{}", row.iter().map(|square| {
-                                match square {
-                                    Some((c, p)) => get_notation_for_piece(*c, *p).to_string(),
-                                    None => String::from("-"),
-                                }
-                            }).collect::<Vec<String>>().join(" ")));
-                        })
-                    }
+                if a.get_flag("as_fen") {
+                    self.shell.output(&format!("Fen String:   {}", self.game.serialize_board()));
+                    self.shell.empty_line();
+                }
+                if a.get_flag("as_zobrist") {
+                    self.shell.output(&format!("Zobrist Hash: {:064b}", self.game.get_board().zobrist.get_id()));
+                    self.shell.empty_line();
+                }
+                if !a.get_flag("hide_board") {
+                    self.shell.output("    Board:");
+                    //let fen_state = FenBoardState::from_fen(&self.game.get_board().to_fen());
+                    //Table::new([[0,1,2],[3,4,5],[6,7,8]]);
+                    format_board_for_display(self.game.get_board()).iter().for_each(|row| {
+                        self.shell.output(row);
+                    });
                 }
             }
         }

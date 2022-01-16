@@ -1,4 +1,4 @@
-use crate::rules::{Color, pieces::movement::{CastleType, Move}};
+use crate::{rules::{Color, pieces::movement::{CastleType, Move}}, util::zobrist::ZobristId};
 
 use super::{bitboards::get_bit_for_square, positions::{Attack, Pin, BoardPosition}};
 
@@ -10,7 +10,7 @@ pub struct ApplyableBoardChange {
     pub absolute_pins: Vec<Pin>,
     pub pinned_pieces: u64,
     pub responses: Vec<ApplyableBoardChange>,
-    pub new_zobrist_id: u64,
+    pub new_zobrist_id: ZobristId,
     pub new_position: BoardPosition,
     pub new_state: BoardState,
 }
@@ -18,7 +18,7 @@ pub struct ApplyableBoardChange {
 
 #[derive(Copy, Clone)]
 pub struct ReversibleBoardChange {
-    pub prior_zobrist_id: u64,
+    pub prior_zobrist_id: ZobristId,
     pub prior_position: BoardPosition,
     pub prior_state: BoardState,
     

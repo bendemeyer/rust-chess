@@ -5,7 +5,7 @@ use crate::rules::pieces::PieceType;
 use crate::rules::pieces::movement::{Move, SlideDirection, PawnMovement};
 use crate::rules::pieces::{Piece, movement::CastleType};
 
-use super::bitboards::{get_bit_for_square, set_bit_at_square, unset_bit_at_square, get_diagonal_bitboard, get_ray_bitboard, BitboardSquares, get_knight_bitboard, get_pawn_bitboard, get_orthagonal_bitboard, ColorBoard, PieceTypeBoard, PieceBoard, BitboardPieceLocations};
+use super::bitboards::{get_bit_for_square, set_bit_at_square, unset_bit_at_square, get_diagonal_bitboard, get_ray_bitboard, BitboardSquares, get_knight_bitboard, get_pawn_bitboard, get_orthagonal_bitboard, ColorBoard, PieceTypeBoard, PieceBoard};
 use super::squares::BoardSquare;
 
 
@@ -100,6 +100,53 @@ impl CastlingSquares {
                     rook_start: BoardSquare::A8.value(), rook_end: BoardSquare::D8.value(),
                     transit_squares: get_bit_for_square(BoardSquare::D8.value()) | get_bit_for_square(BoardSquare::C8.value()) | get_bit_for_square(BoardSquare::B8.value()),
                     king_transit_squares: get_bit_for_square(BoardSquare::D8.value()),
+                }
+            }
+        }
+    }
+}
+
+
+
+#[derive(Copy, Clone)]
+pub struct PieceLocation {
+    pub square: u8,
+    pub piece: Piece,
+}
+
+pub struct BitboardPieceLocations<I> where I: Iterator<Item=PieceBoard> {
+    board: Option<PieceBoard>,
+    boards: I,
+}
+
+impl<I> BitboardPieceLocations<I> where I: Iterator<Item=PieceBoard> {
+    pub fn from_iter(boards: I) -> Self {
+        let mut result = Self {
+            board: None,
+            boards: boards,
+        };
+        result.prepare_next_board();
+        return result;
+    }
+
+    fn prepare_next_board(&mut self) {
+        self.board = self.boards.next();
+    }
+}
+
+impl<I> Iterator for BitboardPieceLocations<I> where I: Iterator<Item=PieceBoard> {
+    type Item = PieceLocation;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.board.as_mut() {
+            None => None,
+            Some(pb) => {
+                match pb.next() {
+                    Some(square) => Some(PieceLocation { square: square, piece: *pb.get_piece() }),
+                    None => {
+                        self.prepare_next_board();
+                        self.next()
+                    }
                 }
             }
         }
