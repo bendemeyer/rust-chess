@@ -3,7 +3,7 @@ use std::{collections::HashSet, time::Instant};
 use num_format::{ToFormattedString, Locale};
 use tabled::{Table, Style, Alignment, Modify, Full};
 
-use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}, fen_board_from_position, Board}, pieces::{PieceType, movement::Move, Piece}, Color}, util::{fen::FenBoardState, zobrist::ZobristId}, testing::{perft::PerftRunner, zobrist::ZobristCollisionTester}};
+use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}, fen_board_from_position, Board}, pieces::{PieceType, movement::Move, Piece}, Color}, util::{fen::{FenBoardState, get_notation_for_piece}, zobrist::ZobristId}, testing::{perft::PerftRunner, zobrist::ZobristCollisionTester}, engine::search::alpha_beta::AlphaBetaSearch};
 
 use super::arguments::{ArgumentParser, Arguments};
 
@@ -21,11 +21,11 @@ fn build_argument_parser() -> ArgumentParser {
         .add_positional_arg("count", false, false).unwrap();
 
     builder.add_subcommand("perft").unwrap()
-        .add_named_arg("depth", HashSet::from(["--test-depth"]), true, false).unwrap()
+        .add_named_arg("depth", HashSet::from(["--depth"]), true, false).unwrap()
         .add_named_arg("threads", HashSet::from(["--threads"]), false, false).unwrap();
 
     builder.add_subcommand("zobrist_test").unwrap()
-        .add_named_arg("depth", HashSet::from(["--test-depth"]), true, false).unwrap();
+        .add_named_arg("depth", HashSet::from(["--depth"]), true, false).unwrap();
 
     builder.add_subcommand("move").unwrap();
 
@@ -38,7 +38,7 @@ fn build_argument_parser() -> ArgumentParser {
         .add_flag_arg("as_zobrist", HashSet::from(["--as-zobrist"])).unwrap();
 
     builder.add_subcommand("search").unwrap()
-        .add_named_arg("depth", HashSet::from(["--engine-depth"]), false, false).unwrap()
+        .add_named_arg("depth", HashSet::from(["--depth"]), false, false).unwrap()
         .add_named_arg("threads", HashSet::from(["--threads"]), false, false).unwrap();
 
     builder.add_subcommand("exit").unwrap();
@@ -88,19 +88,19 @@ fn get_unicode_piece_symbol(piece: &Piece) -> String {
 
 fn format_board_for_display(board: &Board) -> Vec<String> {
     let mut result = Vec::new();
-    result.push(String::from("  ┌────┬────┬────┬────┬────┬────┬────┬────┐"));
+    result.push(String::from("  ┌───┬───┬───┬───┬───┬───┬───┬───┐"));
     fen_board_from_position(&board.position).iter().enumerate().for_each(|(index, row)| {
         result.push(row.iter().fold(format!("{}{}", (7 - index) + 1, " │"), |row_string, square| {
             format!("{} {} │", row_string, match square {
-                Some(piece) => get_unicode_piece_symbol(piece),
-                None => String::from("  "),
+                Some(piece) => get_notation_for_piece(*piece).to_string(),
+                None => String::from(" "),
             })
         }));
-        result.push(String::from("  ├────┼────┼────┼────┼────┼────┼────┼────┤"));
+        result.push(String::from("  ├───┼───┼───┼───┼───┼───┼───┼───┤"));
     });
     result.pop();
-    result.push(String::from("  └────┴────┴────┴────┴────┴────┴────┴────┘"));
-    result.push(String::from("     a    b    c    d    e    f    g    h  "));
+    result.push(String::from("  └───┴───┴───┴───┴───┴───┴───┴───┘"));
+    result.push(String::from("    a   b   c   d   e   f   g   h  "));
     return result;
 }
 
@@ -331,8 +331,6 @@ impl Interface {
                 }
                 if !a.get_flag("hide_board") {
                     self.shell.output("    Board:");
-                    //let fen_state = FenBoardState::from_fen(&self.game.get_board().to_fen());
-                    //Table::new([[0,1,2],[3,4,5],[6,7,8]]);
                     format_board_for_display(self.game.get_board()).iter().for_each(|row| {
                         self.shell.output(row);
                     });
@@ -349,16 +347,11 @@ impl Interface {
                     Some(d) => d.parse().unwrap(),
                     None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
                 };
-                self.shell.output("Searching...");
-                let result = match a.get_arg("threads") {
-                    Some(t) => self.game.threaded_search(depth, t.parse().unwrap()),
-                    None => self.game.search(depth),
-                };
-                self.shell.output("Search complete!");
-                self.shell.empty_line();
-                self.shell.output(&format!("Evaluated {} nodes with {} cache hits in {:?}", result.calculated_nodes, result.cache_hits, result.search_time));
-                self.shell.output(&format!("Score: {}", result.get_score()));
-                self.shell.output(&format!("Best move: {}", &get_text_for_move(result.get_move())));
+                let start = Instant::now();
+                let result = AlphaBetaSearch::do_threaded_search(*self.game.get_board(), depth, a.get_arg("threads").unwrap_or(String::from("1")).parse().unwrap());
+                let duration = start.elapsed();
+                self.shell.output(&format!("Position socre: {}", result));
+                self.shell.output(&format!("Completed in {:?}", duration));
             }
         }
     }

@@ -2,7 +2,7 @@ use crossbeam_channel::unbounded;
 use num_format::{ToFormattedString, Locale};
 use tabled::Tabled;
 
-use crate::{rules::{board::Board, pieces::movement::{Move, NullMove}}, util::concurrency::{ThreadPool, Job}};
+use crate::{rules::{board::Board, pieces::movement::{Move, NullMove}}, util::concurrency::{pools::ThreadPool, tasks::Task}};
 
 
 enum PerftType {
@@ -150,7 +150,7 @@ impl PerftRunner {
         for mov in board.get_legal_moves() {
             let mut thread_board = board;
             thread_board.make_move(&mov);
-            thread_pool.enqueue(Job {
+            thread_pool.enqueue(Task {
                 task: Box::new(move || {
                     Self::perft(PerftContext {
                         board: thread_board,

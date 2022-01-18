@@ -1,4 +1,4 @@
-use crate::{engine::{Engine, SearchResult}, rules::{Color, pieces::{Piece, movement::Move}, board::Board}, util::zobrist::ZobristHashMap};
+use crate::{rules::{Color, pieces::{Piece, movement::Move}, board::Board}, util::zobrist::ZobristHashMap};
 
 
 #[derive(Copy, Clone)]
@@ -102,14 +102,6 @@ impl Game {
             board: board,
             history: GameHistory::new(board),
         }
-    }
-
-    pub fn search(&mut self, depth: u8) -> SearchResult {
-        return Engine::do_search(self.board.clone(), depth);
-    }
-
-    pub fn threaded_search(&mut self, depth: u8, _threads: u8) -> SearchResult {
-        return Engine::do_search(self.board.clone(), depth);
     }
 
     pub fn make_move(&mut self, new_move: &Move) {
