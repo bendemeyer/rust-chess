@@ -2,7 +2,7 @@ use std::{sync::{Mutex, Arc, RwLock}, cmp::Ordering};
 
 use crossbeam_channel::{Sender, Receiver, unbounded};
 
-use crate::{engine::{evaluation::Evaluator, scores::{best_score, is_better}}, util::{zobrist::ZobristHashMap, concurrency::{pools::AsyncPriorityThreadPool, tasks::AsyncTask, queues::{PriorityQueueWriter, PriorityQueueBuilder}}}, rules::{pieces::movement::{Move, NullMove}, Color, board::Board}};
+use crate::{engine::{evaluation::Evaluator, scores::{best_score, is_better}}, util::{zobrist::ZobristHashMap, concurrency::{pools::AsyncPriorityThreadPool, tasks::AsyncTask, queues::{PriorityQueueWriter, PriorityQueueBuilder}}}, rules::{pieces::movement::{Move, NullMove}, board::Board}};
 
 
 impl PartialOrd for Move {
@@ -52,7 +52,7 @@ pub enum AlphaBetaResultType {
     Empty,
     Cutoff,
     Transposition,
-    Calculated(Move),
+    Calculated,
 }
 
 
@@ -60,6 +60,7 @@ pub enum AlphaBetaResultType {
 pub struct AlphaBetaResult {
     pub result_type: AlphaBetaResultType,
     pub score: i16,
+    pub mov: Move,
     pub calculated_nodes: u32,
     pub cache_hits: u32,
 }
@@ -69,15 +70,17 @@ impl AlphaBetaResult {
         return Self {
             result_type: AlphaBetaResultType::Empty,
             score: score,
+            mov: Move::NullMove(NullMove {}),
             calculated_nodes: 0,
             cache_hits: 0,
         }
     }
 
-    pub fn evaluated(score: i16, mov: Move) -> Self {
+    pub fn evaluated(score: i16) -> Self {
         return Self {
-            result_type: AlphaBetaResultType::Calculated(mov),
+            result_type: AlphaBetaResultType::Calculated,
             score: score,
+            mov: Move::NullMove(NullMove {}),
             calculated_nodes: 1,
             cache_hits: 0,
         }
@@ -87,17 +90,9 @@ impl AlphaBetaResult {
         return Self {
             result_type: AlphaBetaResultType::Transposition,
             score: score,
+            mov: Move::NullMove(NullMove {}),
             calculated_nodes: 0,
-            cache_hits: 1,
-        }
-    }
-
-    pub fn merge(&mut self, other: Self, color: Color) {
-        self.calculated_nodes += other.calculated_nodes;
-        self.cache_hits += other.cache_hits;
-        if is_better(other.score, self.score, color) {
-            self.result_type = other.result_type;
-            self.score = other.score;
+            cache_hits: 1
         }
     }
 }
@@ -112,7 +107,9 @@ enum AlphaBetaThreadContextParent {
 struct AlphaBetaThreadContext {
     transpositions: Arc<RwLock<ZobristHashMap<i16>>>,
     parent: AlphaBetaThreadContextParent,
-    move_color: Color,
+    board: Board,
+    mov: Move,
+    depth_remaining: u8,
     result: AlphaBetaResult,
     beta: i16,
     complete: bool,
@@ -121,68 +118,101 @@ struct AlphaBetaThreadContext {
 }
 
 impl AlphaBetaThreadContext {
-    pub fn initial(board: Board, channel: Sender<AlphaBetaResult>) -> Self {
+    pub fn initial(board: Board, channel: Sender<AlphaBetaResult>, depth: u8) -> Self {
         return Self {
             transpositions: Arc::new(RwLock::new(Default::default())),
             parent: AlphaBetaThreadContextParent::Channel(channel),
-            move_color: board.state.get_move_color(),
+            board: board,
+            mov: Move::NullMove(NullMove {}),
+            depth_remaining: depth,
             result: AlphaBetaResult::new(best_score(board.state.get_move_color().swap())),
             beta: best_score(board.state.get_move_color()),
             complete: false,
-            child_count: 1,
+            child_count: 0,
             children_complete: 0,
         }
     }
 
-    pub fn next_context(prev: &Arc<RwLock<AlphaBetaThreadContext>>, move_count: u8) -> Result<Self, ()> {
-        let prev_ref = prev.read().unwrap();
-        if prev_ref.is_complete() {
-            return Err(());
+    pub fn advance(mut self) -> Result<Vec<Self>, ()> {
+        if self.is_complete() {
+            return Err(())
         }
-        return Ok(Self {
-            transpositions: Arc::clone(&prev_ref.transpositions),
-            parent: AlphaBetaThreadContextParent::Instance(Arc::clone(prev)),
-            move_color: prev_ref.move_color.swap(),
-            result: AlphaBetaResult::new(prev_ref.beta),
-            beta: prev_ref.result.score,
-            complete: false,
-            child_count: move_count,
-            children_complete: 0,
-        });
+        if self.depth_remaining <= 0 {
+            self.evaluate();
+            return Err(())
+        }
+        let transposition = self.transpositions.read().unwrap().get(&self.board.zobrist.get_id()).map(|s| *s);
+        if let Some(score) = transposition {
+            self.transpose(score);
+            return Err(())
+        }
+        let mut moves = self.board.get_legal_moves();
+        moves.sort();
+        let prev_ctx = Arc::new(RwLock::new(self));
+        return Ok(moves.into_iter().map(|mov| {
+            { prev_ctx.write().unwrap().child_count += 1; }
+            let mut new_board = prev_ctx.read().unwrap().board;
+            new_board.make_move(&mov);
+            Self {
+                transpositions: Arc::clone(&prev_ctx.read().unwrap().transpositions),
+                parent: AlphaBetaThreadContextParent::Instance(Arc::clone(&prev_ctx)),
+                board: new_board,
+                mov: mov,
+                depth_remaining: prev_ctx.read().unwrap().depth_remaining - 1,
+                result: AlphaBetaResult::new(prev_ctx.read().unwrap().beta),
+                beta: prev_ctx.read().unwrap().result.score,
+                complete: false,
+                child_count: 0,
+                children_complete: 0,
+            }
+        }).collect())
     }
 
     pub fn is_complete(&self) -> bool {
         return self.complete || match &self.parent {
             AlphaBetaThreadContextParent::Instance(p) => p.read().unwrap().is_complete(),
-            AlphaBetaThreadContextParent::Channel(_) => true,
+            AlphaBetaThreadContextParent::Channel(_) => false,
         }
     }
 
-    pub fn check_transpositions(&self, id: u64) -> Option<i16> {
-        return self.transpositions.read().unwrap().get(&id).map(|s| *s);
+    fn evaluate(&mut self) {
+        self.result = AlphaBetaResult::evaluated(Evaluator::evaluate_board(&self.board));
+        self.finish();
+    }
+
+    fn transpose(&mut self, score: i16) {
+        self.result = AlphaBetaResult::transposed(score);
+        self.finish();
     }
 
     pub fn finish(&mut self) {
         self.complete = true;
-        if let AlphaBetaResultType::Calculated(_mov) = self.result.result_type {
-            // TODO: Write score to transposition table
+        if self.transpositions.read().unwrap().get(&self.board.zobrist.get_id()).is_none() {
+            self.transpositions.write().unwrap().insert(self.board.zobrist.get_id(), self.result.score);
         }
         match &self.parent {
-            AlphaBetaThreadContextParent::Instance(p) => p.write().unwrap().complete_sibling(self.result),
+            AlphaBetaThreadContextParent::Instance(p) => p.write().unwrap().complete_child(self.result, self.mov),
             AlphaBetaThreadContextParent::Channel(s) => s.send(self.result).expect("Error sending final result for threaded Alpha Beta Search."),
         }
     }
 
-    pub fn complete_sibling(&mut self, result: AlphaBetaResult) {
-        self.children_complete += 1;
+    pub fn complete_child(&mut self, result: AlphaBetaResult, child_move: Move) {
         if self.complete { return };
-        if is_better(result.score, self.beta, self.move_color) {
+        self.children_complete += 1;
+        if is_better(result.score, self.beta, self.board.state.get_move_color()) {
             self.result.result_type = AlphaBetaResultType::Cutoff;
+            self.result.score = self.beta;
+            self.result.mov = child_move;
             self.finish();
+            return;
         }
-        self.result.merge(result, self.move_color);
+        if is_better(result.score, self.result.score, self.board.state.get_move_color()) {
+            self.result.score = result.score;
+            self.result.mov = child_move;
+        }
         if self.children_complete >= self.child_count {
-            self.finish()
+            self.result.result_type = AlphaBetaResultType::Calculated;
+            self.finish();
         }
     }
 }
@@ -247,36 +277,20 @@ impl AlphaBetaSearch {
         let mut pool = AsyncPriorityThreadPool::from_builder(queue_builder);
         pool.init(threads);
         let (tx, rx) = unbounded();
-        let ctx = Arc::new(RwLock::new(AlphaBetaThreadContext::initial(board, tx.clone())));
-        Self::threaded_search(board, Move::NullMove(NullMove {}), max_depth, pool.clone_writer(), ctx);
+        let ctx = AlphaBetaThreadContext::initial(board, tx.clone(), max_depth);
+        Self::threaded_search(pool.clone_writer(), ctx);
         let result = rx.recv().expect("Error receiving final result from threaded Alpha Beta Search");
         pool.join();
         return result;
     }
 
-    fn threaded_search(board: Board, mov: Move, depth: u8, pool: PriorityQueueWriter<AlphaBetaSearchPriority, AsyncTask>, ctx: Arc<RwLock<AlphaBetaThreadContext>>) {
-        if ctx.read().unwrap().is_complete() {
-            return;
-        }
-        if depth <= 0 {
-            ctx.write().unwrap().complete_sibling(AlphaBetaResult::evaluated(Evaluator::evaluate_board(&board), mov));
-            return;
-        }
-        if let Some(score) = ctx.read().unwrap().check_transpositions(board.zobrist.get_id()) {
-            ctx.write().unwrap().complete_sibling(AlphaBetaResult::transposed(score));
-            return;
-        }
-        let moves = board.get_legal_moves();
-        if let Ok(prepared_ctx) = AlphaBetaThreadContext::next_context(&ctx, moves.len() as u8) {
-            let wrapped_ctx = Arc::new(RwLock::new(prepared_ctx));
-            for (index, mov) in moves.into_iter().enumerate() {
+    fn threaded_search(pool: PriorityQueueWriter<AlphaBetaSearchPriority, AsyncTask>, ctx: AlphaBetaThreadContext) {
+        if let Ok(contexts) = ctx.advance() {
+            for (index, next_ctx) in contexts.into_iter().enumerate() {
                 let next_pool = pool.clone();
-                let next_ctx = Arc::clone(&wrapped_ctx);
-                let mut next_board = board;
-                next_board.make_move(&mov);
                 pool.enqueue(AsyncTask {
                     task: Box::new(move || {
-                        Self::threaded_search(next_board, mov, depth - 1, next_pool, next_ctx);
+                        Self::threaded_search(next_pool, next_ctx);
                     })
                 }, &AlphaBetaSearchPriority::from_index(index)).expect("Error enqueueing AsyncTask for threaded Alpha Beta Search");
             }
