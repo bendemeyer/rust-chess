@@ -1,4 +1,4 @@
-use std::{sync::{Mutex, Arc, RwLock}, cmp::Ordering, time::{Instant, Duration}};
+use std::{sync::{Mutex, Arc, RwLock}, cmp::Ordering};
 
 use crossbeam_channel::{Sender, Receiver, unbounded};
 
@@ -47,112 +47,142 @@ impl AlphaBetaSearchPriority {
 }
 
 
+#[derive(Copy, Clone)]
+pub enum AlphaBetaResultType {
+    Empty,
+    Cutoff,
+    Transposition,
+    Calculated(Move),
+}
+
+
+#[derive(Copy, Clone)]
 pub struct AlphaBetaResult {
-    color: Color,
-    best_move: Move,
-    best_move_score: i16,
+    pub result_type: AlphaBetaResultType,
+    pub score: i16,
     pub calculated_nodes: u32,
     pub cache_hits: u32,
-    start_time: Option<Instant>,
-    pub search_time: Duration,
 }
 
 impl AlphaBetaResult {
-    pub fn from_color(color: Color) -> Self {
-        Self {
-            color: color,
-            best_move: Move::NullMove(NullMove {}),
-            best_move_score: best_score(color.swap()),
+    pub fn new(score: i16) -> Self {
+        return Self {
+            result_type: AlphaBetaResultType::Empty,
+            score: score,
             calculated_nodes: 0,
             cache_hits: 0,
-            start_time: None,
-            search_time: Default::default(),
         }
     }
 
-    pub fn start(&mut self) {
-        self.start_time = Some(Instant::now());
-    }
-
-    pub fn complete(&mut self) {
-        if let Some(start) = self.start_time {
-            self.search_time = start.elapsed();
+    pub fn evaluated(score: i16, mov: Move) -> Self {
+        return Self {
+            result_type: AlphaBetaResultType::Calculated(mov),
+            score: score,
+            calculated_nodes: 1,
+            cache_hits: 0,
         }
     }
 
-    pub fn process_move(&mut self, new_move: Move, score: i16) {
-        if is_better(score, self.best_move_score, self.color) {
-            self.best_move_score = score;
-            self.best_move = new_move;
+    pub fn transposed(score: i16) -> Self {
+        return Self {
+            result_type: AlphaBetaResultType::Transposition,
+            score: score,
+            calculated_nodes: 0,
+            cache_hits: 1,
         }
     }
 
-    pub fn get_score(&self) -> i16 {
-        return self.best_move_score;
+    pub fn merge(&mut self, other: Self, color: Color) {
+        self.calculated_nodes += other.calculated_nodes;
+        self.cache_hits += other.cache_hits;
+        if is_better(other.score, self.score, color) {
+            self.result_type = other.result_type;
+            self.score = other.score;
+        }
     }
+}
 
-    pub fn get_move(&self) -> &Move {
-        return &self.best_move;
-    }
+
+enum AlphaBetaThreadContextParent {
+    Channel(Sender<AlphaBetaResult>),
+    Instance(Arc<RwLock<AlphaBetaThreadContext>>),
 }
 
 
 struct AlphaBetaThreadContext {
+    transpositions: Arc<RwLock<ZobristHashMap<i16>>>,
+    parent: AlphaBetaThreadContextParent,
     move_color: Color,
-    alpha: i16,
+    result: AlphaBetaResult,
     beta: i16,
-    beta_cutoff: bool,
-    sibling_count: u8,
-    completed: u8,
-    completion_callback: Box<dyn Fn(i16) + Send + Sync>
+    complete: bool,
+    child_count: u8,
+    children_complete: u8,
 }
 
 impl AlphaBetaThreadContext {
-    pub fn initial(board: Board, callback: Box<dyn Fn(i16) + Send + Sync>) -> Self {
+    pub fn initial(board: Board, channel: Sender<AlphaBetaResult>) -> Self {
         return Self {
+            transpositions: Arc::new(RwLock::new(Default::default())),
+            parent: AlphaBetaThreadContextParent::Channel(channel),
             move_color: board.state.get_move_color(),
-            alpha: best_score(board.state.get_move_color().swap()),
+            result: AlphaBetaResult::new(best_score(board.state.get_move_color().swap())),
             beta: best_score(board.state.get_move_color()),
-            beta_cutoff: false,
-            sibling_count: 1,
-            completed: 0,
-            completion_callback: callback,
+            complete: false,
+            child_count: 1,
+            children_complete: 0,
         }
     }
 
-    pub fn next_context(&self, move_count: u8, callback: Box<dyn Fn(i16) + Send + Sync>) -> Result<Self, ()> {
-        if self.beta_cutoff { return Err(()) };
+    pub fn next_context(prev: &Arc<RwLock<AlphaBetaThreadContext>>, move_count: u8) -> Result<Self, ()> {
+        let prev_ref = prev.read().unwrap();
+        if prev_ref.is_complete() {
+            return Err(());
+        }
         return Ok(Self {
-            move_color: self.move_color.swap(),
-            alpha: self.beta,
-            beta: self.alpha,
-            beta_cutoff: false,
-            sibling_count: move_count,
-            completed: 0,
-            completion_callback: callback,
+            transpositions: Arc::clone(&prev_ref.transpositions),
+            parent: AlphaBetaThreadContextParent::Instance(Arc::clone(prev)),
+            move_color: prev_ref.move_color.swap(),
+            result: AlphaBetaResult::new(prev_ref.beta),
+            beta: prev_ref.result.score,
+            complete: false,
+            child_count: move_count,
+            children_complete: 0,
         });
     }
 
-    pub fn is_beta_cutoff(&self) -> bool {
-        return self.beta_cutoff;
+    pub fn is_complete(&self) -> bool {
+        return self.complete || match &self.parent {
+            AlphaBetaThreadContextParent::Instance(p) => p.read().unwrap().is_complete(),
+            AlphaBetaThreadContextParent::Channel(_) => true,
+        }
     }
 
-    pub fn current_alpha(&self) -> i16 {
-        return self.alpha;
+    pub fn check_transpositions(&self, id: u64) -> Option<i16> {
+        return self.transpositions.read().unwrap().get(&id).map(|s| *s);
     }
 
-    pub fn complete_sibling(&mut self, score: i16) {
-        self.completed += 1;
-        if self.beta_cutoff { return };
-        if is_better(score, self.beta, self.move_color) {
-            self.beta_cutoff = true;
-            (self.completion_callback)(self.beta);
+    pub fn finish(&mut self) {
+        self.complete = true;
+        if let AlphaBetaResultType::Calculated(_mov) = self.result.result_type {
+            // TODO: Write score to transposition table
         }
-        if is_better(score, self.alpha, self.move_color) {
-            self.alpha = score;
+        match &self.parent {
+            AlphaBetaThreadContextParent::Instance(p) => p.write().unwrap().complete_sibling(self.result),
+            AlphaBetaThreadContextParent::Channel(s) => s.send(self.result).expect("Error sending final result for threaded Alpha Beta Search."),
         }
-        if self.completed >= self.sibling_count {
-            (self.completion_callback)(self.alpha)
+    }
+
+    pub fn complete_sibling(&mut self, result: AlphaBetaResult) {
+        self.children_complete += 1;
+        if self.complete { return };
+        if is_better(result.score, self.beta, self.move_color) {
+            self.result.result_type = AlphaBetaResultType::Cutoff;
+            self.finish();
+        }
+        self.result.merge(result, self.move_color);
+        if self.children_complete >= self.child_count {
+            self.finish()
         }
     }
 }
@@ -162,22 +192,6 @@ struct AlphaBetaContext {
     board: Board,
     calculated_nodes: u32,
     cache_hits: u32,
-}
-
-impl AlphaBetaContext {
-    pub fn get_best(&self, new: i16, old: i16) -> i16 {
-        match self.board.state.get_move_color() {
-            Color::White => if new > old { new } else { old },
-            Color::Black => if new < old { new } else { old }
-        }
-    }
-
-    pub fn is_better(&self, new: i16, old: i16) -> bool {
-        match self.board.state.get_move_color() {
-            Color::White => new > old,
-            Color::Black => new < old
-        }
-    }
 }
 
 
@@ -217,13 +231,13 @@ impl AlphaBetaSearch {
                 },
             };
             ctx.board.unmake_move(change);
-            if ctx.is_better(score, opponent_best_forcible) { return opponent_best_forcible; }
-            best_forcible = ctx.get_best(score, best_forcible);
+            if is_better(score, opponent_best_forcible, ctx.board.state.get_move_color()) { return opponent_best_forcible; }
+            best_forcible = if is_better(score, best_forcible, ctx.board.state.get_move_color()) { score } else { best_forcible };
         }
         return best_forcible;
     }
 
-    pub fn do_threaded_search(board: Board, max_depth: u8, threads: u8) -> i16 {
+    pub fn do_threaded_search(board: Board, max_depth: u8, threads: u8) -> AlphaBetaResult {
         let queue_builder = PriorityQueueBuilder::from_priorities(Vec::from([
             AlphaBetaSearchPriority::FirstMove,
             AlphaBetaSearchPriority::NextTwo,
@@ -232,45 +246,37 @@ impl AlphaBetaSearch {
         ]));
         let mut pool = AsyncPriorityThreadPool::from_builder(queue_builder);
         pool.init(threads);
-        let transpositions: Arc<RwLock<ZobristHashMap<i16>>> = Arc::new(RwLock::new(Default::default()));
         let (tx, rx) = unbounded();
-        let ctx = Arc::new(RwLock::new(AlphaBetaThreadContext::initial(board, Box::new(move |score| {
-            tx.send(score).expect("Error sending final result for threaded Alpha Beta Search.");
-        }))));
-        Self::threaded_search(board, max_depth, pool.clone_writer(), transpositions, ctx);
+        let ctx = Arc::new(RwLock::new(AlphaBetaThreadContext::initial(board, tx.clone())));
+        Self::threaded_search(board, Move::NullMove(NullMove {}), max_depth, pool.clone_writer(), ctx);
         let result = rx.recv().expect("Error receiving final result from threaded Alpha Beta Search");
         pool.join();
         return result;
     }
 
-    fn threaded_search(board: Board, depth: u8, pool: PriorityQueueWriter<AlphaBetaSearchPriority, AsyncTask>, transpositions: Arc<RwLock<ZobristHashMap<i16>>>, ctx: Arc<RwLock<AlphaBetaThreadContext>>) {
-        let transposition_id = board.zobrist.get_id();
-        if let Some(transposition_score) = transpositions.read().unwrap().get(&transposition_id) {
-            ctx.write().unwrap().complete_sibling(*transposition_score);
+    fn threaded_search(board: Board, mov: Move, depth: u8, pool: PriorityQueueWriter<AlphaBetaSearchPriority, AsyncTask>, ctx: Arc<RwLock<AlphaBetaThreadContext>>) {
+        if ctx.read().unwrap().is_complete() {
             return;
         }
         if depth <= 0 {
-            ctx.write().unwrap().complete_sibling(Evaluator::evaluate_board(&board));
+            ctx.write().unwrap().complete_sibling(AlphaBetaResult::evaluated(Evaluator::evaluate_board(&board), mov));
             return;
         }
-        let prev_ctx = Arc::clone(&ctx);
-        let prev_transpositions = Arc::clone(&transpositions);
+        if let Some(score) = ctx.read().unwrap().check_transpositions(board.zobrist.get_id()) {
+            ctx.write().unwrap().complete_sibling(AlphaBetaResult::transposed(score));
+            return;
+        }
         let moves = board.get_legal_moves();
-        let ctx_result = ctx.read().unwrap().next_context(moves.len() as u8, Box::new(move |score| {
-            prev_transpositions.write().unwrap().insert(transposition_id, score);
-            prev_ctx.write().unwrap().complete_sibling(score)
-        }));
-        if let Ok(prepared_ctx) = ctx_result {
+        if let Ok(prepared_ctx) = AlphaBetaThreadContext::next_context(&ctx, moves.len() as u8) {
             let wrapped_ctx = Arc::new(RwLock::new(prepared_ctx));
-            for (index, mov) in moves.iter().enumerate() {
+            for (index, mov) in moves.into_iter().enumerate() {
                 let next_pool = pool.clone();
-                let next_transpositions = Arc::clone(&transpositions);
                 let next_ctx = Arc::clone(&wrapped_ctx);
                 let mut next_board = board;
-                next_board.make_move(mov);
+                next_board.make_move(&mov);
                 pool.enqueue(AsyncTask {
                     task: Box::new(move || {
-                        Self::threaded_search(next_board, depth - 1, next_pool, next_transpositions, next_ctx);
+                        Self::threaded_search(next_board, mov, depth - 1, next_pool, next_ctx);
                     })
                 }, &AlphaBetaSearchPriority::from_index(index)).expect("Error enqueueing AsyncTask for threaded Alpha Beta Search");
             }

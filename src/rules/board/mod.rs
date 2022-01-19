@@ -425,62 +425,20 @@ impl Board {
     }
 
     fn revoke_castle_rights(&mut self, new_move: &Move) -> Vec<CastleRight> {
-        let mut revoked_rights: Vec<CastleRight> = Vec::new();
-        for m in new_move.get_piece_movements() {
-            if m.start_square == BoardSquare::E1.value() || m.end_square == BoardSquare::E1.value() {
-                let kingside = CastleRight { color: Color::White, side: CastleType::Kingside };
-                let queenside = CastleRight { color: Color::White, side: CastleType::Queenside };
-                if self.state.can_castle(&kingside) {
-                    self.state.revoke_castle_right(&kingside);
-                    revoked_rights.push(kingside);
-                }
-                if self.state.can_castle(&queenside) {
-                    self.state.revoke_castle_right(&queenside);
-                    revoked_rights.push(queenside);
-                }
-            }
-            if m.start_square == BoardSquare::E8.value() || m.end_square == BoardSquare::E8.value() {
-                let kingside = CastleRight { color: Color::Black, side: CastleType::Kingside };
-                let queenside = CastleRight { color: Color::Black, side: CastleType::Queenside };
-                if self.state.can_castle(&kingside) {
-                    self.state.revoke_castle_right(&kingside);
-                    revoked_rights.push(kingside);
-                }
-                if self.state.can_castle(&queenside) {
-                    self.state.revoke_castle_right(&queenside);
-                    revoked_rights.push(queenside);
-                }
-            }
-            if m.start_square == BoardSquare::H1.value() || m.end_square == BoardSquare::H1.value() {
-                let castle = CastleRight { color: Color::White, side: CastleType::Kingside };
-                if self.state.can_castle(&castle) {
-                    self.state.revoke_castle_right(&castle);
-                    revoked_rights.push(castle);
-                }
-            }
-            if m.start_square == BoardSquare::A1.value() || m.end_square == BoardSquare::A1.value() {
-                let castle = CastleRight { color: Color::White, side: CastleType::Queenside };
-                if self.state.can_castle(&castle) {
-                    self.state.revoke_castle_right(&castle);
-                    revoked_rights.push(castle);
-                }
-            }
-            if m.start_square == BoardSquare::H8.value() || m.end_square == BoardSquare::H8.value() {
-                let castle = CastleRight { color: Color::Black, side: CastleType::Kingside };
-                if self.state.can_castle(&castle) {
-                    self.state.revoke_castle_right(&castle);
-                    revoked_rights.push(castle);
-                }
-            }
-            if m.start_square == BoardSquare::A8.value() || m.end_square == BoardSquare::A8.value() {
-                let castle = CastleRight { color: Color::Black, side: CastleType::Queenside };
-                if self.state.can_castle(&castle) {
-                    self.state.revoke_castle_right(&castle);
-                    revoked_rights.push(castle);
-                }
-            }
+        let mut rights = Vec::new();
+        for movement in new_move.get_piece_movements() {
+            rights.extend(CastleRight::associated_rights_by_square(movement.start_square));
+            rights.extend(CastleRight::associated_rights_by_square(movement.end_square));
         }
-        return revoked_rights;
+        return rights.into_iter().filter_map(|r| {
+            match self.state.can_castle(&r) {
+                true => {
+                    self.state.revoke_castle_right(&r);
+                    Some(r)
+                },
+                false => None,
+            }
+        }).collect();
     }
 
     fn get_moves_for_piece(&self, square: u8) -> Vec<Move> {

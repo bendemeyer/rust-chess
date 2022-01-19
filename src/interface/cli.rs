@@ -3,7 +3,7 @@ use std::{collections::HashSet, time::Instant};
 use num_format::{ToFormattedString, Locale};
 use tabled::{Table, Style, Alignment, Modify, Full};
 
-use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}, fen_board_from_position, Board}, pieces::{PieceType, movement::Move, Piece}, Color}, util::{fen::{FenBoardState, get_notation_for_piece}, zobrist::ZobristId}, testing::{perft::PerftRunner, zobrist::ZobristCollisionTester}, engine::search::alpha_beta::AlphaBetaSearch};
+use crate::{game::Game, interface::{arguments::ParsedArgs, shell::InteractiveShell}, rules::{board::{squares::{BoardSquare, get_notation_string_for_square}, fen_board_from_position, Board}, pieces::{PieceType, movement::Move, Piece}, Color}, util::{fen::{FenBoardState, get_notation_for_piece}, zobrist::ZobristId}, testing::{perft::PerftRunner, zobrist::ZobristCollisionTester}, engine::search::alpha_beta::{AlphaBetaSearch, AlphaBetaResultType}};
 
 use super::arguments::{ArgumentParser, Arguments};
 
@@ -350,7 +350,10 @@ impl Interface {
                 let start = Instant::now();
                 let result = AlphaBetaSearch::do_threaded_search(*self.game.get_board(), depth, a.get_arg("threads").unwrap_or(String::from("1")).parse().unwrap());
                 let duration = start.elapsed();
-                self.shell.output(&format!("Position socre: {}", result));
+                self.shell.output(&format!("Position socre: {}", result.score));
+                if let AlphaBetaResultType::Calculated(m) = result.result_type {
+                    self.shell.output(&get_text_for_move(&m));
+                }
                 self.shell.output(&format!("Completed in {:?}", duration));
             }
         }
