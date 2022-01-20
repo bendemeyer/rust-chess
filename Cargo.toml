@@ -12,6 +12,7 @@ debug = true
 lazy_static = "1.4.0"
 fxhash      = "0.2.1"
 crossbeam-channel = "0.5.2"
+lockfree    = "0.5.1"
 shell-words = "1.0.0"
 rustyline   = "9.1.1"
 tabled      = "0.3.0"

@@ -1,7 +1,8 @@
-use std::{collections::VecDeque, hash::Hash, time::Duration, thread};
+use std::{collections::VecDeque, hash::Hash, thread::{self, Thread}};
 
 use crossbeam_channel::{Sender, Receiver, unbounded, RecvError, TryRecvError, SendError};
 use fxhash::FxHashMap;
+use lockfree::prelude::Stack;
 
 
 pub struct SimpleQueue<T> {
@@ -41,60 +42,87 @@ impl<T> SimpleQueue<T> {
 }
 
 
+pub enum QueueType {
+    FIFO,
+    LIFO,
+}
+
+
 pub struct PriorityQueueWriter<P: Copy + Hash + Eq, T> {
+    priorities: Vec<P>,
     queues: FxHashMap<P, Sender<T>>,
+    parked_threads: Receiver<Thread>,
 }
 
 impl<P: Copy + Hash + Eq, T> Clone for PriorityQueueWriter<P, T> {
     fn clone(&self) -> Self {
         return Self {
-            queues: self.queues.iter().map(|(p, tx)| { (*p, tx.clone()) }).collect(),
+            priorities: self.priorities.clone(),
+            queues: self.priorities.iter().map(|p| { (*p, self.queues.get(p).unwrap().clone()) }).collect(),
+            parked_threads: self.parked_threads.clone(),
         }
     }
 }
 
 impl<P: Copy + Hash + Eq, T> PriorityQueueWriter<P, T> {
-    pub fn new() -> Self {
+    pub fn new(rx: Receiver<Thread>) -> Self {
         return Self {
+            priorities: Vec::new(),
             queues: Default::default(),
+            parked_threads: rx,
         }
     }
 
-    pub fn add_priority_queue(&mut self, priority: P, queue: Sender<T>) {
+    fn add_priority_queue(&mut self, priority: P, queue: Sender<T>) {
+        self.priorities.push(priority);
         self.queues.insert(priority, queue);
     }
 
     pub fn enqueue(&self, message: T, priority: &P) -> Result<(), SendError<T>> {
         if let Some(queue) = self.queues.get(priority) {
-            return queue.send(message);
+            return match queue.send(message) {
+                Ok(()) => {
+                    if let Ok(t) = self.parked_threads.try_recv() {
+                        t.unpark();
+                    }
+                    Ok(())
+                },
+                Err(se) => Err(se),
+            }
         } else {
             Err(SendError(message))
+        }
+    }
+
+    pub fn destruct_queue(mut self) {
+        for priority in &self.priorities {
+            let queue = self.queues.remove(priority).unwrap();
+            drop(queue);
+        }
+        while let Ok(t) = self.parked_threads.try_recv() {
+            t.unpark();
         }
     }
 }
 
 
 pub struct PriorityQueueReader<T> {
-    queues: Vec<Receiver<T>>,
-}
-
-impl<T> Clone for PriorityQueueReader<T> {
-    fn clone(&self) -> Self {
-        return Self {
-            queues: self.queues.iter().map(|rx| rx.clone()).collect(),
-        }
-    }
+    fifo_queues: Vec<Receiver<T>>,
+    lifo_queues: Vec<Stack<T>>,
+    parked_threads: Sender<Thread>,
 }
 
 impl<T> PriorityQueueReader<T> {
-    pub fn new() -> Self {
+    pub fn new(tx: Sender<Thread>) -> Self {
         return Self {
-            queues: Default::default(),
+            fifo_queues: Default::default(),
+            lifo_queues: Default::default(),
+            parked_threads: tx,
         }
     }
 
-    pub fn add_queue(&mut self, queue: Receiver<T>) {
-        self.queues.push(queue);
+    fn add_queue(&mut self, queue: Receiver<T>) {
+        self.fifo_queues.push(queue);
     }
 
     pub fn dequeue(&self) -> Result<T, RecvError> {
@@ -102,21 +130,24 @@ impl<T> PriorityQueueReader<T> {
             match self.try_dequeue() {
                 Ok(message) => return Ok(message),
                 Err(TryRecvError::Disconnected) => return Err(RecvError),
-                Err(TryRecvError::Empty) => thread::sleep(Duration::from_millis(10)),
+                Err(TryRecvError::Empty) => {
+                    self.parked_threads.send(thread::current()).expect("Error parking PriorityQueueReader thread.");
+                    thread::park();
+                }
             }
         }
     }
 
     pub fn try_dequeue(&self) -> Result<T, TryRecvError> {
         let mut disconnect_count = 0;
-        for queue in &self.queues {
+        for queue in &self.fifo_queues {
             match queue.try_recv() {
                 Ok(msg) => return Ok(msg),
                 Err(TryRecvError::Disconnected) => disconnect_count += 1,
                 Err(TryRecvError::Empty) => (),
             }
         }
-        if disconnect_count == self.queues.len() {
+        if disconnect_count == self.fifo_queues.len() {
             return Err(TryRecvError::Disconnected);
         } else {
             return Err(TryRecvError::Empty);
@@ -152,9 +183,10 @@ impl<P: Copy + Hash + Eq> PriorityQueueBuilder<P> {
         return self;
     }
 
-    pub fn build<T>(self) -> (PriorityQueueWriter<P, T>, PriorityQueueReader<T>) {
-        let mut writer = PriorityQueueWriter::new();
-        let mut reader = PriorityQueueReader::new();
+    pub fn build<T>(self, _queue_type: QueueType) -> (PriorityQueueWriter<P, T>, PriorityQueueReader<T>) {
+        let (tx, rx) = unbounded();
+        let mut writer = PriorityQueueWriter::new(rx);
+        let mut reader = PriorityQueueReader::new(tx);
         for priority in self.priorities {
             let (tx, rx) = unbounded();
             writer.add_priority_queue(priority, tx);

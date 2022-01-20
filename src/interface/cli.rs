@@ -348,11 +348,25 @@ impl Interface {
                     None => self.shell.input("What depth should the engine search to? ").parse().unwrap()
                 };
                 let start = Instant::now();
-                let result = AlphaBetaSearch::do_threaded_search(*self.game.get_board(), depth, a.get_arg("threads").unwrap_or(String::from("1")).parse().unwrap());
+                let result = match a.get_arg("threads") {
+                    Some(a) => {
+                        let threads: u8 = a.parse().unwrap_or(1);
+                        AlphaBetaSearch::do_threaded_search(*self.game.get_board(), depth, threads)
+                    },
+                    None => {
+                        AlphaBetaSearch::do_search(*self.game.get_board(), depth)
+                    }
+                };
                 let duration = start.elapsed();
-                self.shell.output(&format!("Position score: {}", result.score));
-                self.shell.output(&get_text_for_move(&result.mov));
-                self.shell.output(&format!("Completed in {:?}", duration));
+                self.shell.empty_line();
+                if let Some(mov) = result.mov {
+                    self.shell.output(&format!("Best move: {}", get_text_for_move(&mov)));
+                }
+                self.shell.empty_line();
+                self.shell.output(&format!("Position score:             {}", result.score));
+                self.shell.output(&format!("Evaluated positions:        {}", result.evaluated_nodes.to_formatted_string(&Locale::en)));
+                self.shell.output(&format!("Cached transpositions used: {}", result.cache_hits.to_formatted_string(&Locale::en)));
+                self.shell.output(&format!("Completed in:               {:?}", duration));
             }
         }
     }

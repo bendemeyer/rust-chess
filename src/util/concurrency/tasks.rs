@@ -1,5 +1,6 @@
 use crossbeam_channel::Sender;
 
+
 pub struct Task<T: Send + 'static> {
     pub task: Box<dyn FnOnce() -> T + Send>,
     pub comm: Sender<T>

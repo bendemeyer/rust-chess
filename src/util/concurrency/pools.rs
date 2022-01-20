@@ -1,8 +1,8 @@
-use std::{hash::Hash, thread::{JoinHandle, self}};
+use std::{hash::Hash, thread::{JoinHandle, self}, sync::Arc};
 
 use crossbeam_channel::{Sender, Receiver, unbounded};
 
-use super::{queues::{PriorityQueueWriter, PriorityQueueReader, PriorityQueueBuilder}, tasks::{Task, AsyncTask}};
+use super::{queues::{PriorityQueueWriter, PriorityQueueReader, PriorityQueueBuilder, QueueType}, tasks::{Task, AsyncTask}};
 
 pub struct ThreadPool<T: Send + 'static> {
     queue_writer: Sender<Task<T>>,
@@ -50,8 +50,8 @@ impl<T: Send + 'static> ThreadPool<T> {
 
 
 pub struct AsyncPriorityThreadPool<P: Copy + Hash + Eq> {
-    queue_writer: PriorityQueueWriter<P, AsyncTask>,
-    queue_reader: PriorityQueueReader<AsyncTask>,
+    queue_writer: Arc<PriorityQueueWriter<P, AsyncTask>>,
+    queue_reader: Arc<PriorityQueueReader<AsyncTask>>,
     handles: Vec<JoinHandle<()>>,
 }
 
@@ -60,16 +60,16 @@ unsafe impl<P: Copy + Hash + Eq> Sync for AsyncPriorityThreadPool<P> {}
 
 impl<P: Copy + Hash + Eq> AsyncPriorityThreadPool<P> {
     pub fn from_builder(builder: PriorityQueueBuilder<P>) -> Self {
-        let (writer, reader) = builder.build();
+        let (writer, reader) = builder.build(QueueType::FIFO);
         return Self {
-            queue_writer: writer,
-            queue_reader: reader,
+            queue_writer: Arc::new(writer),
+            queue_reader: Arc::new(reader),
             handles: Vec::new(),
         }
     }
 
-    pub fn clone_writer(&self) -> PriorityQueueWriter<P, AsyncTask> {
-        return self.queue_writer.clone();
+    pub fn clone_writer(&self) -> Arc<PriorityQueueWriter<P, AsyncTask>> {
+        return Arc::clone(&self.queue_writer);
     }
 
     pub fn enqueue(&self, job: AsyncTask, priority: &P) {
@@ -77,7 +77,7 @@ impl<P: Copy + Hash + Eq> AsyncPriorityThreadPool<P> {
     }
 
     fn start_worker(&self) -> JoinHandle<()> {
-        let queue = self.queue_reader.clone();
+        let queue = Arc::clone(&self.queue_reader);
         return thread::spawn(move || {
             while let Ok(job) = queue.dequeue() {
                 job.run();
@@ -92,7 +92,8 @@ impl<P: Copy + Hash + Eq> AsyncPriorityThreadPool<P> {
     }
 
     pub fn join(self) {
-        drop(self.queue_writer);
+        println!("{} References to the PriorityQueueWriter remain", Arc::strong_count(&self.queue_writer));
+        Arc::try_unwrap(self.queue_writer).unwrap_or_else(|_| panic!("Error extracting PriorityQueueWriter from AsyncPriorityThreadPool for destruction")).destruct_queue();
         self.handles.into_iter().for_each(|h| h.join().unwrap());
     }
 }
