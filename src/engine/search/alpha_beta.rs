@@ -352,11 +352,11 @@ impl AlphaBetaSearch {
         return result;
     }
 
-    fn threaded_search(pool: Arc<PriorityQueueWriter<AlphaBetaSearchPriority, AsyncTask>>, ctx: AlphaBetaThreadContext) {
+    fn threaded_search(pool: Arc<RwLock<PriorityQueueWriter<AlphaBetaSearchPriority, AsyncTask>>>, ctx: AlphaBetaThreadContext) {
         if let Ok(contexts) = ctx.advance() {
             for (index, next_ctx) in contexts.into_iter().enumerate() {
                 let next_pool = Arc::clone(&pool);
-                pool.enqueue(AsyncTask {
+                pool.read().unwrap().enqueue(AsyncTask {
                     task: Box::new(move || {
                         Self::threaded_search(next_pool, next_ctx);
                     })

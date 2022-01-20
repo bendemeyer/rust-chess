@@ -4,7 +4,7 @@ use crossbeam_channel::{SendError, RecvError, TryRecvError, Receiver, Sender, un
 use lockfree::prelude::Stack;
 
 
-pub fn lifo_channel<T: Send>() -> (LifoSender<T>, LifoReceiver<T>) {
+pub fn lifo_channel<T>() -> (LifoSender<T>, LifoReceiver<T>) {
     let (parking_tx, parking_rx) = unbounded();
     let ch = LifoChannel::<T> {
         stack: Stack::new(),
@@ -24,14 +24,14 @@ pub fn lifo_channel<T: Send>() -> (LifoSender<T>, LifoReceiver<T>) {
 }
 
 
-struct LifoChannel<T: Send> {
+struct LifoChannel<T> {
     stack: Stack<T>,
     sender_count: AtomicUsize,
     receiver_count: AtomicUsize,
     parked_threads: Receiver<Thread>,
 }
 
-impl<T: Send> LifoChannel<T> {
+impl<T> LifoChannel<T> {
     fn push(&self, data: T) -> Result<(), SendError<T>> {
         if self.receiver_count.load(Ordering::Acquire) > 0 {
             self.stack.push(data);
@@ -54,7 +54,13 @@ impl<T: Send> LifoChannel<T> {
     }
 
     fn unpark(&self) {
-        if let Ok(t) = self.parked_threads.recv() {
+        if let Ok(t) = self.parked_threads.try_recv() {
+            t.unpark();
+        }
+    }
+
+    fn unpark_all(&self) {
+        while let Ok(t) = self.parked_threads.try_recv() {
             t.unpark();
         }
     }
@@ -68,7 +74,10 @@ impl<T: Send> LifoChannel<T> {
     }
 
     fn destruct_sender(&self) {
-        self.sender_count.fetch_sub(1, Ordering::Release);
+        let prev = self.sender_count.fetch_sub(1, Ordering::Release);
+        if prev <= 1 {
+            self.unpark_all();
+        }
     }
 
     fn destruct_receiver(&self) {
@@ -76,11 +85,11 @@ impl<T: Send> LifoChannel<T> {
     }
 }
 
-pub struct LifoSender<T: Send> {
+pub struct LifoSender<T> {
     channel: Arc<LifoChannel<T>>,
 }
 
-impl<T: Send> Clone for LifoSender<T> {
+impl<T> Clone for LifoSender<T> {
     fn clone(&self) -> Self {
         self.channel.clone_sender();
         return Self {
@@ -89,24 +98,24 @@ impl<T: Send> Clone for LifoSender<T> {
     }
 }
 
-impl<T: Send> Drop for LifoSender<T> {
+impl<T> Drop for LifoSender<T> {
     fn drop(&mut self) {
         self.channel.destruct_sender();
     }
 }
 
-impl<T: Send> LifoSender<T> {
+impl<T> LifoSender<T> {
     pub fn send(&self, data: T) -> Result<(), SendError<T>> {
         return self.channel.push(data);
     }
 }
 
-pub struct LifoReceiver<T: Send> {
+pub struct LifoReceiver<T> {
     channel: Arc<LifoChannel<T>>,
     parker: Sender<Thread>,
 }
 
-impl<T: Send> Clone for LifoReceiver<T> {
+impl<T> Clone for LifoReceiver<T> {
     fn clone(&self) -> Self {
         self.channel.clone_receiver();
         return Self {
@@ -116,13 +125,13 @@ impl<T: Send> Clone for LifoReceiver<T> {
     }
 }
 
-impl<T: Send> Drop for LifoReceiver<T> {
+impl<T> Drop for LifoReceiver<T> {
     fn drop(&mut self) {
         self.channel.destruct_receiver();
     }
 }
 
-impl<T: Send> LifoReceiver<T> {
+impl<T> LifoReceiver<T> {
     pub fn recv(&self) -> Result<T, RecvError> {
         loop {
             match self.try_recv() {

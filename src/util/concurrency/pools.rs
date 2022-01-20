@@ -1,4 +1,4 @@
-use std::{hash::Hash, thread::{JoinHandle, self}, sync::Arc};
+use std::{hash::Hash, thread::{JoinHandle, self}, sync::{Arc, RwLock}};
 
 use crossbeam_channel::{Sender, Receiver, unbounded};
 
@@ -50,7 +50,7 @@ impl<T: Send + 'static> ThreadPool<T> {
 
 
 pub struct AsyncPriorityThreadPool<P: Copy + Hash + Eq> {
-    queue_writer: Arc<PriorityQueueWriter<P, AsyncTask>>,
+    queue_writer: Arc<RwLock<PriorityQueueWriter<P, AsyncTask>>>,
     queue_reader: Arc<PriorityQueueReader<AsyncTask>>,
     handles: Vec<JoinHandle<()>>,
 }
@@ -60,20 +60,20 @@ unsafe impl<P: Copy + Hash + Eq> Sync for AsyncPriorityThreadPool<P> {}
 
 impl<P: Copy + Hash + Eq> AsyncPriorityThreadPool<P> {
     pub fn from_builder(builder: PriorityQueueBuilder<P>) -> Self {
-        let (writer, reader) = builder.build(QueueType::FIFO);
+        let (writer, reader) = builder.build(QueueType::LIFO);
         return Self {
-            queue_writer: Arc::new(writer),
+            queue_writer: Arc::new(RwLock::new(writer)),
             queue_reader: Arc::new(reader),
             handles: Vec::new(),
         }
     }
 
-    pub fn clone_writer(&self) -> Arc<PriorityQueueWriter<P, AsyncTask>> {
+    pub fn clone_writer(&self) -> Arc<RwLock<PriorityQueueWriter<P, AsyncTask>>> {
         return Arc::clone(&self.queue_writer);
     }
 
     pub fn enqueue(&self, job: AsyncTask, priority: &P) {
-        self.queue_writer.enqueue(job, priority).expect("Error enqueueing message in AsyncPriorityThreadPool");
+        self.queue_writer.read().unwrap().enqueue(job, priority).expect("Error enqueueing message in AsyncPriorityThreadPool");
     }
 
     fn start_worker(&self) -> JoinHandle<()> {
@@ -92,8 +92,7 @@ impl<P: Copy + Hash + Eq> AsyncPriorityThreadPool<P> {
     }
 
     pub fn join(self) {
-        println!("{} References to the PriorityQueueWriter remain", Arc::strong_count(&self.queue_writer));
-        Arc::try_unwrap(self.queue_writer).unwrap_or_else(|_| panic!("Error extracting PriorityQueueWriter from AsyncPriorityThreadPool for destruction")).destruct_queue();
+        self.queue_writer.write().unwrap().destruct_queue();
         self.handles.into_iter().for_each(|h| h.join().unwrap());
     }
 }

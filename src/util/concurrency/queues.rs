@@ -2,44 +2,8 @@ use std::{collections::VecDeque, hash::Hash, thread::{self, Thread}};
 
 use crossbeam_channel::{Sender, Receiver, unbounded, RecvError, TryRecvError, SendError};
 use fxhash::FxHashMap;
-use lockfree::prelude::Stack;
 
-
-pub struct SimpleQueue<T> {
-    input: Sender<T>,
-    output: Receiver<T>,
-}
-
-impl<T> Clone for SimpleQueue<T> {
-    fn clone(&self) -> Self {
-        return Self {
-            input: self.input.clone(),
-            output: self.output.clone(),
-        }
-    }
-}
-
-impl<T> SimpleQueue<T> {
-    pub fn new() -> Self {
-        let (tx, rx) = unbounded();
-        return Self {
-            input: tx,
-            output: rx,
-        }
-    }
-
-    pub fn enqueue(&self, message: T) -> Result<(), SendError<T>> {
-        self.input.send(message)
-    }
-
-    pub fn dequeue(&self) -> Result<T, RecvError> {
-        self.output.recv()
-    }
-
-    pub fn try_dequeue(&self) -> Result<T, TryRecvError> {
-        self.output.try_recv()
-    }
-}
+use super::channels::{LifoSender, LifoReceiver, lifo_channel};
 
 
 pub enum QueueType {
@@ -47,10 +11,163 @@ pub enum QueueType {
     LIFO,
 }
 
+impl QueueType {
+    fn build<T>(&self) -> (QueueWriter<T>, QueueReader<T>) {
+        return match self {
+            QueueType::FIFO => {
+                let (tx, rx) = FifoQueueBuilder::build::<T>();
+                (QueueWriter::FIFO(tx), QueueReader::FIFO(rx))
+            },
+            QueueType::LIFO => {
+                let (tx, rx) = LifoQueueBuilder::build::<T>();
+                (QueueWriter::LIFO(tx), QueueReader::LIFO(rx))
+            }
+        }
+    }
+}
+
+
+enum QueueWriter<T> {
+    FIFO(FifoQueueWriter<T>),
+    LIFO(LifoQueueWriter<T>),
+}
+
+impl<T> QueueWriter<T> {
+    fn enqueue(&self, message: T) -> Result<(), SendError<T>> {
+        return match self {
+            QueueWriter::FIFO(writer) => writer.enqueue(message),
+            QueueWriter::LIFO(writer) => writer.enqueue(message),
+        }
+    }
+}
+
+
+enum QueueReader<T> {
+    FIFO(FifoQueueReader<T>),
+    LIFO(LifoQueueReader<T>),
+}
+
+impl<T> QueueReader<T> {
+    pub fn dequeue(&self) -> Result<T, RecvError> {
+        return match self {
+            QueueReader::FIFO(reader) => reader.dequeue(),
+            QueueReader::LIFO(reader) => reader.dequeue(),
+        }
+    }
+
+    pub fn try_dequeue(&self) -> Result<T, TryRecvError> {
+        return match self {
+            QueueReader::FIFO(reader) => reader.try_dequeue(),
+            QueueReader::LIFO(reader) => reader.try_dequeue(),
+        }
+    }
+}
+
+
+pub struct FifoQueueBuilder {}
+
+impl FifoQueueBuilder {
+    pub fn build<T>() -> (FifoQueueWriter<T>, FifoQueueReader<T>) {
+        let (tx, rx) = unbounded();
+        return (FifoQueueWriter { queue: tx }, FifoQueueReader { queue: rx })
+    }
+}
+
+pub struct FifoQueueWriter<T> {
+    queue: Sender<T>,
+}
+
+impl<T> Clone for FifoQueueWriter<T> {
+    fn clone(&self) -> Self {
+        return Self {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<T> FifoQueueWriter<T> {
+    pub fn enqueue(&self, message: T) -> Result<(), SendError<T>> {
+        self.queue.send(message)
+    }
+}
+
+pub struct FifoQueueReader<T> {
+    queue: Receiver<T>,
+}
+
+impl<T> Clone for FifoQueueReader<T> {
+    fn clone(&self) -> Self {
+        return Self {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<T> FifoQueueReader<T> {
+    pub fn dequeue(&self) -> Result<T, RecvError> {
+        self.queue.recv()
+    }
+
+    pub fn try_dequeue(&self) -> Result<T, TryRecvError> {
+        self.queue.try_recv()
+    }
+}
+
+
+pub struct LifoQueueBuilder {}
+
+impl LifoQueueBuilder {
+    pub fn build<T>() -> (LifoQueueWriter<T>, LifoQueueReader<T>) {
+        let (tx, rx) = lifo_channel::<T>();
+        return (LifoQueueWriter { queue: tx }, LifoQueueReader { queue: rx });
+    }
+}
+
+pub struct LifoQueueWriter<T> {
+    queue: LifoSender<T>,
+}
+
+impl<T> Clone for LifoQueueWriter<T> {
+    fn clone(&self) -> Self {
+        return Self {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<T> LifoQueueWriter<T> {
+    pub fn enqueue(&self, message: T) -> Result<(), SendError<T>> {
+        self.queue.send(message)
+    }
+}
+
+pub struct LifoQueueReader<T> {
+    queue: LifoReceiver<T>,
+}
+
+impl<T> Clone for LifoQueueReader<T> {
+    fn clone(&self) -> Self {
+        return Self {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<T> LifoQueueReader<T> {
+    pub fn dequeue(&self) -> Result<T, RecvError> {
+        self.queue.recv()
+    }
+
+    pub fn try_dequeue(&self) -> Result<T, TryRecvError> {
+        self.queue.try_recv()
+    }
+}
+
+
 
 pub struct PriorityQueueWriter<P: Copy + Hash + Eq, T> {
     priorities: Vec<P>,
-    queues: FxHashMap<P, Sender<T>>,
+    queues: FxHashMap<P, QueueWriter<T>>,
     parked_threads: Receiver<Thread>,
 }
 
@@ -58,30 +175,22 @@ impl<P: Copy + Hash + Eq, T> Clone for PriorityQueueWriter<P, T> {
     fn clone(&self) -> Self {
         return Self {
             priorities: self.priorities.clone(),
-            queues: self.priorities.iter().map(|p| { (*p, self.queues.get(p).unwrap().clone()) }).collect(),
+            queues: self.priorities.iter().map(|p| {
+                (*p, match self.queues.get(p).unwrap() {
+                    QueueWriter::FIFO(w) => QueueWriter::FIFO(w.clone()),
+                    QueueWriter::LIFO(w) => QueueWriter::LIFO(w.clone()),
+                })
+            }).collect(),
             parked_threads: self.parked_threads.clone(),
         }
     }
 }
 
 impl<P: Copy + Hash + Eq, T> PriorityQueueWriter<P, T> {
-    pub fn new(rx: Receiver<Thread>) -> Self {
-        return Self {
-            priorities: Vec::new(),
-            queues: Default::default(),
-            parked_threads: rx,
-        }
-    }
-
-    fn add_priority_queue(&mut self, priority: P, queue: Sender<T>) {
-        self.priorities.push(priority);
-        self.queues.insert(priority, queue);
-    }
-
     pub fn enqueue(&self, message: T, priority: &P) -> Result<(), SendError<T>> {
         if let Some(queue) = self.queues.get(priority) {
-            return match queue.send(message) {
-                Ok(()) => {
+            return match queue.enqueue(message) {
+                Ok(_) => {
                     if let Ok(t) = self.parked_threads.try_recv() {
                         t.unpark();
                     }
@@ -94,7 +203,7 @@ impl<P: Copy + Hash + Eq, T> PriorityQueueWriter<P, T> {
         }
     }
 
-    pub fn destruct_queue(mut self) {
+    pub fn destruct_queue(&mut self) {
         for priority in &self.priorities {
             let queue = self.queues.remove(priority).unwrap();
             drop(queue);
@@ -107,24 +216,11 @@ impl<P: Copy + Hash + Eq, T> PriorityQueueWriter<P, T> {
 
 
 pub struct PriorityQueueReader<T> {
-    fifo_queues: Vec<Receiver<T>>,
-    lifo_queues: Vec<Stack<T>>,
+    queues: Vec<QueueReader<T>>,
     parked_threads: Sender<Thread>,
 }
 
 impl<T> PriorityQueueReader<T> {
-    pub fn new(tx: Sender<Thread>) -> Self {
-        return Self {
-            fifo_queues: Default::default(),
-            lifo_queues: Default::default(),
-            parked_threads: tx,
-        }
-    }
-
-    fn add_queue(&mut self, queue: Receiver<T>) {
-        self.fifo_queues.push(queue);
-    }
-
     pub fn dequeue(&self) -> Result<T, RecvError> {
         loop {
             match self.try_dequeue() {
@@ -140,14 +236,14 @@ impl<T> PriorityQueueReader<T> {
 
     pub fn try_dequeue(&self) -> Result<T, TryRecvError> {
         let mut disconnect_count = 0;
-        for queue in &self.fifo_queues {
-            match queue.try_recv() {
+        for queue in &self.queues {
+            match queue.try_dequeue() {
                 Ok(msg) => return Ok(msg),
                 Err(TryRecvError::Disconnected) => disconnect_count += 1,
                 Err(TryRecvError::Empty) => (),
             }
         }
-        if disconnect_count == self.fifo_queues.len() {
+        if disconnect_count == self.queues.len() {
             return Err(TryRecvError::Disconnected);
         } else {
             return Err(TryRecvError::Empty);
@@ -183,15 +279,26 @@ impl<P: Copy + Hash + Eq> PriorityQueueBuilder<P> {
         return self;
     }
 
-    pub fn build<T>(self, _queue_type: QueueType) -> (PriorityQueueWriter<P, T>, PriorityQueueReader<T>) {
-        let (tx, rx) = unbounded();
-        let mut writer = PriorityQueueWriter::new(rx);
-        let mut reader = PriorityQueueReader::new(tx);
+    pub fn build<T>(self, queue_type: QueueType) -> (PriorityQueueWriter<P, T>, PriorityQueueReader<T>) {
+        let (parking_tx, parking_rx) = unbounded();
+        let mut priorities = Vec::new();
+        let mut writer_queues: FxHashMap<P, QueueWriter<T>> = Default::default();
+        let mut reader_queues = Vec::new();
         for priority in self.priorities {
-            let (tx, rx) = unbounded();
-            writer.add_priority_queue(priority, tx);
-            reader.add_queue(rx);
+            let (tx, rx) = queue_type.build::<T>();
+            priorities.push(priority);
+            writer_queues.insert(priority, tx);
+            reader_queues.push(rx);
         }
+        let writer = PriorityQueueWriter {
+            priorities: priorities,
+            queues: writer_queues,
+            parked_threads: parking_rx
+        };
+        let reader = PriorityQueueReader {
+            queues: reader_queues,
+            parked_threads: parking_tx
+        };
         return (writer, reader);
     }
 }
