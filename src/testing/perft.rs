@@ -1,4 +1,4 @@
-use crossbeam_channel::unbounded;
+use crossbeam::channel::unbounded;
 use num_format::{ToFormattedString, Locale};
 use tabled::Tabled;
 

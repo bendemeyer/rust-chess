@@ -1,6 +1,6 @@
-use std::{hash::Hash, thread::{JoinHandle, self}, sync::{Arc, RwLock}};
+use std::{hash::Hash, thread::{JoinHandle, self}};
 
-use crossbeam_channel::{Sender, Receiver, unbounded};
+use crossbeam::channel::{Sender, Receiver, unbounded};
 
 use super::{queues::{PriorityQueueWriter, PriorityQueueReader, PriorityQueueBuilder, QueueType}, tasks::{Task, AsyncTask}};
 
@@ -50,8 +50,8 @@ impl<T: Send + 'static> ThreadPool<T> {
 
 
 pub struct AsyncPriorityThreadPool<P: Copy + Hash + Eq> {
-    queue_writer: Arc<RwLock<PriorityQueueWriter<P, AsyncTask>>>,
-    queue_reader: Arc<PriorityQueueReader<AsyncTask>>,
+    queue_writer: PriorityQueueWriter<P, AsyncTask>,
+    queue_reader: PriorityQueueReader<AsyncTask>,
     handles: Vec<JoinHandle<()>>,
 }
 
@@ -62,22 +62,22 @@ impl<P: Copy + Hash + Eq> AsyncPriorityThreadPool<P> {
     pub fn from_builder(builder: PriorityQueueBuilder<P>) -> Self {
         let (writer, reader) = builder.build(QueueType::LIFO);
         return Self {
-            queue_writer: Arc::new(RwLock::new(writer)),
-            queue_reader: Arc::new(reader),
+            queue_writer: writer,
+            queue_reader: reader,
             handles: Vec::new(),
         }
     }
 
-    pub fn clone_writer(&self) -> Arc<RwLock<PriorityQueueWriter<P, AsyncTask>>> {
-        return Arc::clone(&self.queue_writer);
+    pub fn clone_writer(&self) -> PriorityQueueWriter<P, AsyncTask> {
+        return self.queue_writer.clone();
     }
 
     pub fn enqueue(&self, job: AsyncTask, priority: &P) {
-        self.queue_writer.read().unwrap().enqueue(job, priority).expect("Error enqueueing message in AsyncPriorityThreadPool");
+        self.queue_writer.enqueue(job, priority).expect("Error enqueueing message in AsyncPriorityThreadPool");
     }
 
     fn start_worker(&self) -> JoinHandle<()> {
-        let queue = Arc::clone(&self.queue_reader);
+        let queue = self.queue_reader.clone();
         return thread::spawn(move || {
             while let Ok(job) = queue.dequeue() {
                 job.run();
@@ -85,14 +85,12 @@ impl<P: Copy + Hash + Eq> AsyncPriorityThreadPool<P> {
         })
     }
 
-    pub fn init(&mut self, pool_size: u8) {
-        self.handles = (0..pool_size).map(|_| {
-            self.start_worker()
-        }).collect();
+    pub fn start_workers(&mut self, worker_count: u8) {
+        (0..worker_count).for_each(|_| self.handles.push(self.start_worker()));
     }
 
-    pub fn join(self) {
-        self.queue_writer.write().unwrap().destruct_queue();
-        self.handles.into_iter().for_each(|h| h.join().unwrap());
+    pub fn join(mut self) {
+        self.queue_writer.destruct_queue();
+        self.handles.into_iter().for_each(|h| { h.join().expect("Error joining threads of AsyncPriorityThreadPool") });
     }
 }

@@ -1,6 +1,6 @@
 use std::{sync::{atomic::{AtomicUsize, Ordering}, Arc}, thread::{Thread, self}};
 
-use crossbeam_channel::{SendError, RecvError, TryRecvError, Receiver, Sender, unbounded};
+use crossbeam::channel::{SendError, RecvError, TryRecvError, Receiver, Sender, unbounded};
 use lockfree::prelude::Stack;
 
 

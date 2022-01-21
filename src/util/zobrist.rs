@@ -1,11 +1,15 @@
 use std::{hash::{Hasher, BuildHasher}, collections::HashMap};
 
+use lockfree::prelude::Map;
+
 use crate::rules::{pieces::{PieceType, movement::{CastleType, Move}, Piece}, Color, board::{state::CastleRight, squares::get_square_from_col_and_row, positions::PieceLocation}};
 
 use super::fen::FenBoardState;
 
 
 pub type ZobristHashMap<T> = HashMap<u64, T, BuildZobristHasher>;
+
+pub type ZobristLockfreeMap<T> = Map<u64, T, BuildZobristHasher>;
 
 
 static TO_MOVE_BIT: u64       = 2u64.pow(63);

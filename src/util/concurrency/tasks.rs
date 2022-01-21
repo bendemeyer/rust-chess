@@ -1,4 +1,4 @@
-use crossbeam_channel::Sender;
+use crossbeam::channel::Sender;
 
 
 pub struct Task<T: Send + 'static> {

@@ -39,7 +39,8 @@ fn build_argument_parser() -> ArgumentParser {
 
     builder.add_subcommand("search").unwrap()
         .add_named_arg("depth", HashSet::from(["--depth"]), false, false).unwrap()
-        .add_named_arg("threads", HashSet::from(["--threads"]), false, false).unwrap();
+        .add_named_arg("threads", HashSet::from(["--threads"]), false, false).unwrap()
+        .add_named_arg("sleep", HashSet::from(["--sleep"]), false, false).unwrap();
 
     builder.add_subcommand("exit").unwrap();
 
@@ -349,9 +350,10 @@ impl Interface {
                 };
                 let start = Instant::now();
                 let result = match a.get_arg("threads") {
-                    Some(a) => {
-                        let threads: u8 = a.parse().unwrap_or(1);
-                        AlphaBetaSearch::do_threaded_search(*self.game.get_board(), depth, threads)
+                    Some(t) => {
+                        let threads: u8 = t.parse().unwrap_or(1);
+                        let sleep = a.get_arg("sleep").unwrap_or("0".to_string()).parse().unwrap_or(0u64);
+                        AlphaBetaSearch::do_threaded_search(*self.game.get_board(), depth, threads, sleep)
                     },
                     None => {
                         AlphaBetaSearch::do_search(*self.game.get_board(), depth)
@@ -366,6 +368,7 @@ impl Interface {
                 self.shell.output(&format!("Position score:             {}", result.score));
                 self.shell.output(&format!("Evaluated positions:        {}", result.evaluated_nodes.to_formatted_string(&Locale::en)));
                 self.shell.output(&format!("Cached transpositions used: {}", result.cache_hits.to_formatted_string(&Locale::en)));
+                self.shell.output(&format!("Beta cutoffs applied:       {}", result.beta_cutoffs.to_formatted_string(&Locale::en)));
                 self.shell.output(&format!("Completed in:               {:?}", duration));
             }
         }

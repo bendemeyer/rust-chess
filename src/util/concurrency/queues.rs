@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, hash::Hash, thread::{self, Thread}};
 
-use crossbeam_channel::{Sender, Receiver, unbounded, RecvError, TryRecvError, SendError};
+use crossbeam::channel::{Sender, Receiver, unbounded, RecvError, TryRecvError, SendError};
 use fxhash::FxHashMap;
 
 use super::channels::{LifoSender, LifoReceiver, lifo_channel};
@@ -32,6 +32,15 @@ enum QueueWriter<T> {
     LIFO(LifoQueueWriter<T>),
 }
 
+impl<T> Clone for QueueWriter<T> {
+    fn clone(&self) -> Self {
+        return match self {
+            QueueWriter::FIFO(writer) => QueueWriter::FIFO(writer.clone()),
+            QueueWriter::LIFO(writer) => QueueWriter::LIFO(writer.clone()),
+        }
+    }
+}
+
 impl<T> QueueWriter<T> {
     fn enqueue(&self, message: T) -> Result<(), SendError<T>> {
         return match self {
@@ -45,6 +54,15 @@ impl<T> QueueWriter<T> {
 enum QueueReader<T> {
     FIFO(FifoQueueReader<T>),
     LIFO(LifoQueueReader<T>),
+}
+
+impl<T> Clone for QueueReader<T> {
+    fn clone(&self) -> Self {
+        return match self {
+            QueueReader::FIFO(reader) => QueueReader::FIFO(reader.clone()),
+            QueueReader::LIFO(reader) => QueueReader::LIFO(reader.clone()),
+        }
+    }
 }
 
 impl<T> QueueReader<T> {
@@ -175,12 +193,7 @@ impl<P: Copy + Hash + Eq, T> Clone for PriorityQueueWriter<P, T> {
     fn clone(&self) -> Self {
         return Self {
             priorities: self.priorities.clone(),
-            queues: self.priorities.iter().map(|p| {
-                (*p, match self.queues.get(p).unwrap() {
-                    QueueWriter::FIFO(w) => QueueWriter::FIFO(w.clone()),
-                    QueueWriter::LIFO(w) => QueueWriter::LIFO(w.clone()),
-                })
-            }).collect(),
+            queues: self.priorities.iter().map(|p| (*p, self.queues.get(p).unwrap().clone())).collect(),
             parked_threads: self.parked_threads.clone(),
         }
     }
@@ -218,6 +231,15 @@ impl<P: Copy + Hash + Eq, T> PriorityQueueWriter<P, T> {
 pub struct PriorityQueueReader<T> {
     queues: Vec<QueueReader<T>>,
     parked_threads: Sender<Thread>,
+}
+
+impl<T> Clone for PriorityQueueReader<T> {
+    fn clone(&self) -> Self {
+        return Self {
+            queues: self.queues.iter().map(|r| r.clone()).collect(),
+            parked_threads: self.parked_threads.clone(),
+        }
+    }
 }
 
 impl<T> PriorityQueueReader<T> {
